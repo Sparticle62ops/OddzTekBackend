@@ -1,0 +1,32 @@
+run = "cowsay Configure me!"
+entrypoint = "server.js"
+
+[nix]
+channel = "stable-24_11"
+
+[agent]
+expertMode = true
+
+[workflows]
+runButton = "Run"
+
+[[workflows.workflow]]
+name = "Run"
+author = 45850289
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "node server.js"
+
+[[ports]]
+localPort = 3000
+externalPort = 3000
+
+[[ports]]
+localPort = 5000
+externalPort = 80
+
+[[ports]]
+localPort = 5173
+externalPort = 5173
