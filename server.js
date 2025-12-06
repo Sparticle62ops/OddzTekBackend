@@ -8,7 +8,8 @@ const cors = require('cors');
 // --- SERVER SETUP ---
 const app = express();
 app.use(cors());
-app.get('/', (req, res) => res.send('Oddztek v7.0 [Encryption] Backend Online'));
+// Simple root route for health check
+app.get('/', (req, res) => res.send('Oddztek v7.1 [Encryption] Backend Online'));
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -16,6 +17,7 @@ const io = new Server(server, {
 });
 
 // --- DATABASE CONNECTION ---
+// Ensure your .env file has MONGO_URI set correctly
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('>> MongoDB Connected'))
   .catch(err => console.error('>> DB Error:', err));
@@ -38,7 +40,9 @@ const playerSchema = new mongoose.Schema({
   inventory: { type: [String], default: [] }, 
   activeHoneypot: { type: Boolean, default: false },
   
-  // Communications
+  // Social
+  inviteCode: { type: String, default: () => Math.random().toString(36).substring(7) },
+  invitedBy: { type: String, default: null },
   inbox: { type: [{ from: String, msg: String, date: { type: Date, default: Date.now } }], default: [] },
 
   // Timers
@@ -90,6 +94,9 @@ const LORE_DB = {
   'blueprint_omega.dat': "Project Omega: Autonomous Digital Currency Generation. Status: UNCONTROLLED EXPANSION."
 };
 
+// --- PUZZLE WORDS ---
+const PUZZLE_WORDS = ["CIPHER", "VECTOR", "MATRIX", "KERNEL", "PROXY", "BINARY", "PROTOCOL", "ACCESS", "SYSTEM", "BREACH"];
+
 // --- HELPERS ---
 function getCooldown(p) { return Math.max(5000, BASE_MINE_COOLDOWN * (1 - (p.networkLevel - 1) * 0.1)); }
 
@@ -104,7 +111,7 @@ function generatePin(level) {
 io.on('connection', (socket) => {
   let user = null;
 
-  // 1. AUTH
+  // 1. AUTH & REFERRALS
   socket.on('login', async ({ username, password }) => {
     try {
       const p = await Player.findOne({ username });
@@ -112,22 +119,40 @@ io.on('connection', (socket) => {
       user = username;
       socket.emit('player_data', p);
       socket.emit('message', { text: `Welcome back, Agent ${username}.`, type: 'success' });
-      
-      // Notify if unread mail
       if (p.inbox.length > 0) socket.emit('message', { text: `[!] You have ${p.inbox.length} unread messages. Type 'mail check'.`, type: 'special' });
-      
       socket.emit('play_sound', 'login');
     } catch (e) { console.error(e); }
   });
 
-  socket.on('register', async ({ username, password }) => {
+  socket.on('register', async ({ username, password, referralCode }) => {
     try {
       if (await Player.findOne({ username })) return socket.emit('message', { text: 'Username taken.', type: 'error' });
-      const p = await Player.create({ username, password });
+      
+      const newPlayer = new Player({ username, password });
+      
+      // Referral Logic
+      if (referralCode) {
+        const referrer = await Player.findOne({ inviteCode: referralCode });
+        if (referrer) {
+          referrer.balance += 200; 
+          newPlayer.balance += 100;
+          newPlayer.invitedBy = referrer.username;
+          await referrer.save();
+          socket.emit('message', { text: `Referral Code Valid. Bonus applied.`, type: 'special' });
+        }
+      }
+      
+      await newPlayer.save();
       user = username;
-      socket.emit('player_data', p);
+      socket.emit('player_data', newPlayer);
       socket.emit('message', { text: 'Account created.', type: 'success' });
     } catch (e) { console.error(e); }
+  });
+
+  socket.on('invite', async () => {
+    if (!user) return;
+    const p = await Player.findOne({ username: user });
+    socket.emit('message', { text: `YOUR INVITE CODE: ${p.inviteCode}\nTell friends to type: register [user] [pass] ${p.inviteCode}`, type: 'special' });
   });
 
   // 2. MINING
@@ -167,7 +192,7 @@ io.on('connection', (socket) => {
     }, MINE_TICK);
   });
 
-  // 3. SHOP
+  // 3. SHOP & INVENTORY
   socket.on('shop', () => {
     let list = "\n=== BLACK MARKET ===\n";
     for (const [id, item] of Object.entries(SHOP_ITEMS)) list += `[${id.padEnd(14)}] ${item.price} ODZ - ${item.desc}\n`;
@@ -180,6 +205,12 @@ io.on('connection', (socket) => {
     if (!item) return socket.emit('message', { text: 'Item not found.', type: 'error' });
     let p = await Player.findOne({ username: user });
     if (p.balance < item.price) return socket.emit('message', { text: 'Insufficient funds.', type: 'error' });
+
+    // Inventory Cap Check (Max 2 of same item unless upgrade/skin)
+    const currentCount = p.inventory.filter(i => i === id).length;
+    if (item.type !== 'upgrade' && item.type !== 'skin' && currentCount >= 2) {
+        return socket.emit('message', { text: 'Inventory Limit Reached (Max 2).', type: 'error' });
+    }
 
     p.balance -= item.price;
     if (item.type === 'upgrade') {
@@ -218,14 +249,13 @@ io.on('connection', (socket) => {
 
   socket.on('leaderboard', async () => {
     const all = await Player.find();
-    // Filter out cloaked users
+    // Filter cloaked users
     const visible = all.filter(p => !p.inventory.includes('cloak_v1'));
     const top = visible.sort((a, b) => b.balance - a.balance).slice(0, 5);
-    
     socket.emit('message', { text: `\n=== ELITE HACKERS ===\n${top.map((p,i)=>`#${i+1} ${p.username} | ${p.balance} ODZ`).join('\n')}`, type: 'info' });
   });
 
-  // 5. PVP HACKING (V7.0 Logic)
+  // 5. PVP HACKING
   socket.on('hack_init', async (targetName) => {
     if (!user || targetName === user) return;
     const target = await Player.findOne({ username: targetName });
@@ -250,7 +280,6 @@ io.on('connection', (socket) => {
     let known = Array(pin.length).fill('*');
     let extraMsg = "";
 
-    // Decryptor Tool Check
     if (p.inventory.includes('decryptor_v1')) {
         const idx = Math.floor(Math.random() * pin.length);
         known[idx] = pin[idx];
@@ -273,17 +302,12 @@ io.on('connection', (socket) => {
     if (val.length !== session.pin.length) return socket.emit('message', { text: `Error: PIN must be ${session.pin.length} digits.`, type: 'error' });
 
     if (val === session.pin) {
-      // SUCCESS
       delete ACTIVE_HACKS[user];
       const t = await Player.findOne({ username: session.target });
       const p = await Player.findOne({ username: user });
-      const stolen = Math.floor(t.balance * 0.25); // 25%
-      t.balance -= stolen;
-      p.balance += stolen;
-      p.lastHack = Date.now();
-      p.xp += 50;
+      const stolen = Math.floor(t.balance * 0.25);
+      t.balance -= stolen; p.balance += stolen; p.lastHack = Date.now(); p.xp += 50;
 
-      // Rare File Drop
       if (Math.random() > 0.8) {
         const secretFile = 'server_log_01.txt';
         if (!p.files.includes(secretFile)) p.files.push(secretFile);
@@ -295,11 +319,9 @@ io.on('connection', (socket) => {
       socket.emit('message', { text: `ACCESS GRANTED. Stole ${stolen} ODZ.`, type: 'success' });
       socket.emit('play_sound', 'success');
     } else {
-      // FAIL - Digit Reveal Logic
       session.attempts--;
       if (session.attempts <= 0) { delete ACTIVE_HACKS[user]; socket.emit('message', { text: 'Lockout.', type: 'error' }); return; }
 
-      // Check for partial matches
       let matched = false;
       for(let i=0; i<session.pin.length; i++) {
           if(val[i] === session.pin[i] && session.known[i] === '*') {
@@ -308,7 +330,6 @@ io.on('connection', (socket) => {
           }
       }
 
-      // Hint
       const diff = Math.abs(parseInt(val) - parseInt(session.pin));
       let hint = diff <= 20 ? "BURNING HOT" : (diff <= 50 ? "HOT" : (diff <= 100 ? "WARM" : "COLD"));
       const dir = val < session.pin ? "(Higher)" : "(Lower)";
@@ -322,7 +343,32 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 6. MAIL & FILES
+  // 6. PUZZLES (CIPHERS)
+  socket.on('decrypt', async () => {
+    if (!user) return;
+    const word = PUZZLE_WORDS[Math.floor(Math.random() * PUZZLE_WORDS.length)];
+    const scrambled = word.split('').sort(() => 0.5 - Math.random()).join('');
+    
+    socket.puzzleAnswer = word; // Temp session storage
+    socket.emit('message', { text: `[PUZZLE] Unscramble: "${scrambled}"\nType: solve [answer]`, type: 'warning' });
+  });
+
+  socket.on('solve', async (ans) => {
+    if (!user || !socket.puzzleAnswer) return;
+    if (ans.toUpperCase() === socket.puzzleAnswer) {
+      let p = await Player.findOne({ username: user });
+      p.balance += 25; p.xp += 15;
+      await p.save();
+      socket.puzzleAnswer = null;
+      socket.emit('player_data', p);
+      socket.emit('message', { text: 'CORRECT. +25 ODZ', type: 'success' });
+      socket.emit('play_sound', 'success');
+    } else {
+      socket.emit('message', { text: 'Incorrect.', type: 'error' });
+    }
+  });
+
+  // 7. MAIL & SYSTEM
   socket.on('mail_send', async ({ recipient, message }) => {
       if (!user) return;
       const t = await Player.findOne({ username: recipient });
