@@ -8,7 +8,7 @@ const cors = require('cors');
 // --- SERVER SETUP ---
 const app = express();
 app.use(cors());
-app.get('/', (req, res) => res.send('Oddztek v8.0 [Singularity] Backend Online'));
+app.get('/', (req, res) => res.send('Oddztek v9.0 [OMNIPOTENCE] Backend Online'));
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -20,40 +20,45 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('>> MongoDB Connected'))
   .catch(err => console.error('>> DB Error:', err));
 
-// --- PLAYER SCHEMA ---
+// --- PLAYER SCHEMA (v9.0) ---
 const playerSchema = new mongoose.Schema({
   username: { type: String, unique: true, required: true },
   password: { type: String, required: true },
   balance: { type: Number, default: 100 },
   xp: { type: Number, default: 0 },
   level: { type: Number, default: 1 },
-  theme: { type: String, default: 'green' },
+  theme: { type: String, default: 'green' }, // Persist theme choice
   
   // Hardware Stats
-  cpuLevel: { type: Number, default: 1 },
-  networkLevel: { type: Number, default: 1 },
-  securityLevel: { type: Number, default: 1 },
+  cpuLevel: { type: Number, default: 1 },      
+  networkLevel: { type: Number, default: 1 },  
+  securityLevel: { type: Number, default: 1 }, 
   
   // Inventory & State
   inventory: { type: [String], default: [] }, 
   activeHoneypot: { type: Boolean, default: false },
   
-  // Social
+  // Social & Chat
   inviteCode: { type: String, default: () => Math.random().toString(36).substring(7) },
   invitedBy: { type: String, default: null },
-  inbox: { type: [{ from: String, msg: String, date: { type: Date, default: Date.now } }], default: [] },
+  inbox: { type: [{ from: String, msg: String, read: Boolean, date: { type: Date, default: Date.now } }], default: [] }, // Updated for Read status
+
+  // Stats Tracking
+  winsFlip: { type: Number, default: 0 },
+  lossesFlip: { type: Number, default: 0 },
 
   // Timers
   lastMine: { type: Number, default: 0 },
   lastHack: { type: Number, default: 0 },
   lastDaily: { type: Number, default: 0 },
   
-  // File System
-  files: { type: [String], default: ['readme.txt'] } 
+  // File System & Missions
+  files: { type: [String], default: ['readme.txt'] },
+  missionProgress: { type: Object, default: {} } // For tracking maze/server hack state
 });
 const Player = mongoose.model('Player', playerSchema);
 
-// --- CONSTANTS ---
+// --- GLOBAL GAME CONSTANTS ---
 const LEVEL_XP_REQ = 200;
 const MINE_DURATION = 20000;
 const MINE_TICK = 5000;
@@ -62,51 +67,30 @@ const HACK_COOLDOWN = 60000;
 
 // --- STATE ---
 const ACTIVE_MINERS = new Set(); 
-const ACTIVE_HACKS = {}; // { user: { target, pin, attempts, expires, known: [] } }
-const ACTIVE_MAZES = {}; // { user: { x, y, map, exitX, exitY } }
+const ACTIVE_HACKS = {}; 
+const ACTIVE_MAZES = {}; 
+const SERVER_HACK_SESSIONS = {}; // For the Server Hack Mission
 
-// --- SHOP CATALOG ---
+// --- SHOP CATALOG (Expanded) ---
 const SHOP_ITEMS = {
+  // HARDWARE
   'cpu_v2': { price: 500, type: 'upgrade', stat: 'cpuLevel', val: 2, desc: 'Doubles mining yield.' },
   'cpu_v3': { price: 2000, type: 'upgrade', stat: 'cpuLevel', val: 3, desc: 'Triples mining yield.' },
   'network_v2': { price: 750, type: 'upgrade', stat: 'networkLevel', val: 2, desc: 'Reduces cooldowns.' },
-  'firewall_v2': { price: 600, type: 'upgrade', stat: 'securityLevel', val: 2, desc: 'Increases PIN length.' },
+  'firewall_v2': { price: 600, type: 'upgrade', stat: 'securityLevel', val: 2, desc: 'Increases PIN length (4 digits).' },
+  'firewall_v3': { price: 1500, type: 'upgrade', stat: 'securityLevel', val: 3, desc: 'Maximum Security (5 digits).' },
   
-  'honeypot': { price: 300, type: 'consumable', desc: 'Trap next hacker.' },
-  'decryptor_v1': { price: 800, type: 'tool', desc: 'Passive: Reveals 1 digit at hack start.' },
+  // TOOLS
+  'honeypot': { price: 300, type: 'consumable', desc: 'Trap next hacker. Steals 50% of their balance.' },
+  'decryptor_v1': { price: 800, type: 'tool', desc: 'Passive: Reveals 1 random digit at hack start.' },
   'brute_force_v1': { price: 1500, type: 'tool', desc: 'Active: Type "brute [user]" to insta-guess 1 digit.' },
   'cloak_v1': { price: 1200, type: 'tool', desc: 'Passive: Hides name from Leaderboard.' },
 
+  // SKINS
   'theme_amber': { price: 100, type: 'skin', val: 'amber', desc: 'Retro monitor style.' },
   'theme_plasma': { price: 250, type: 'skin', val: 'plasma', desc: 'Neon purple aesthetic.' },
-  'theme_matrix': { price: 500, type: 'skin', val: 'matrix', desc: 'Falling code rain.' }
+  'theme_matrix': { price: 500, type: 'skin', val: 'matrix', desc: 'The code is real.' }
 };
-
-// --- LORE ---
-const LORE_DB = {
-  'readme.txt': "Welcome to Oddztek OS. This system is monitored. Unauthorized access is prohibited.",
-  'server_log_01.txt': "FATAL ERROR 10-12-99: Core temperature critical. Automatic shutdown failed.",
-  'blueprint_omega.dat': "Project Omega: Autonomous Digital Currency Generation. Status: UNCONTROLLED EXPANSION.",
-  'admin_pass.txt': "Note to self: The password for the level 5 server is hidden in the maze."
-};
-
-// --- MAZE GENERATOR ---
-function generateMaze(size) {
-  // Simple grid: 0 = Path, 1 = Wall
-  let map = Array(size).fill().map(() => Array(size).fill(1));
-  // Create simple path (random walk)
-  let x=1, y=1;
-  map[y][x] = 0;
-  for(let i=0; i<size*3; i++) {
-    const dir = Math.floor(Math.random()*4);
-    if(dir===0 && y>1) y--;
-    else if(dir===1 && y<size-2) y++;
-    else if(dir===2 && x>1) x--;
-    else if(dir===3 && x<size-2) x++;
-    map[y][x] = 0;
-  }
-  return { map, exitX: x, exitY: y };
-}
 
 // --- HELPERS ---
 function getCooldown(p) { return Math.max(5000, BASE_MINE_COOLDOWN * (1 - (p.networkLevel - 1) * 0.1)); }
@@ -121,7 +105,7 @@ function generatePin(level) {
 io.on('connection', (socket) => {
   let user = null;
 
-  // 1. AUTH
+  // 1. AUTHENTICATION & THEME
   socket.on('login', async ({ username, password }) => {
     try {
       const p = await Player.findOne({ username });
@@ -129,7 +113,10 @@ io.on('connection', (socket) => {
       user = username;
       socket.emit('player_data', p);
       socket.emit('message', { text: `Welcome back, Agent ${username}.`, type: 'success' });
-      if (p.inbox.length > 0) socket.emit('message', { text: `[!] ${p.inbox.length} unread messages.`, type: 'special' });
+      
+      const unread = p.inbox.filter(m => !m.read).length;
+      if (unread > 0) socket.emit('message', { text: `[!] ${unread} unread messages.`, type: 'special' });
+      
       socket.emit('play_sound', 'login');
     } catch (e) { console.error(e); }
   });
@@ -138,10 +125,13 @@ io.on('connection', (socket) => {
     try {
       if (await Player.findOne({ username })) return socket.emit('message', { text: 'Username taken.', type: 'error' });
       const newPlayer = new Player({ username, password });
+      
       if (referralCode) {
         const referrer = await Player.findOne({ inviteCode: referralCode });
         if (referrer) {
-          referrer.balance += 200; newPlayer.balance += 100;
+          referrer.balance += 200; 
+          newPlayer.balance += 100;
+          newPlayer.invitedBy = referrer.username;
           await referrer.save();
           socket.emit('message', { text: `Referral applied.`, type: 'special' });
         }
@@ -153,19 +143,17 @@ io.on('connection', (socket) => {
     } catch (e) { console.error(e); }
   });
 
-  socket.on('invite', async () => {
-    if (!user) return;
-    const p = await Player.findOne({ username: user });
-    socket.emit('message', { text: `YOUR CODE: ${p.inviteCode}`, type: 'special' });
-  });
-
-  // 2. ECONOMY (Mine, Shop, Transfer)
+  // 2. MINING (Optimized)
   socket.on('mine', async () => {
     if (!user || ACTIVE_MINERS.has(user)) return;
     let p = await Player.findOne({ username: user });
     const now = Date.now();
     const cd = getCooldown(p);
-    if (now - p.lastMine < cd) return socket.emit('message', { text: `Cooldown: ${Math.ceil((cd-(now-p.lastMine))/1000)}s`, type: 'warning' });
+    
+    if (now - p.lastMine < cd) {
+        const wait = Math.ceil((cd - (now - p.lastMine))/1000);
+        return socket.emit('message', { text: `System Overheated. Wait ${wait}s.`, type: 'warning' });
+    }
 
     ACTIVE_MINERS.add(user);
     socket.emit('message', { text: `[MINER v${p.cpuLevel}.0] Cycle started (${MINE_DURATION/1000}s)...`, type: 'system' });
@@ -191,7 +179,7 @@ io.on('connection', (socket) => {
       }
     }, MINE_TICK);
   });
-
+  // 3. SHOP & INVENTORY
   socket.on('shop', () => {
     let list = "\n=== BLACK MARKET ===\n";
     for (const [id, item] of Object.entries(SHOP_ITEMS)) list += `[${id.padEnd(14)}] ${item.price} ODZ - ${item.desc}\n`;
@@ -218,32 +206,11 @@ io.on('connection', (socket) => {
       socket.emit('message', { text: 'Honeypot ARMED.', type: 'special' });
     } else {
       if (!p.inventory.includes(id)) p.inventory.push(id);
-      if (item.type === 'skin') p.theme = item.val;
       socket.emit('message', { text: `Purchased: ${id}`, type: 'success' });
     }
     await p.save();
     socket.emit('player_data', p);
     socket.emit('play_sound', 'success');
-  });
-
-  socket.on('transfer', async ({ target, amount }) => {
-    if (!user) return;
-    const amt = parseInt(amount);
-    if (isNaN(amt) || amt <= 0) return socket.emit('message', { text: 'Invalid amount.', type: 'error' });
-    
-    let p = await Player.findOne({ username: user });
-    if (p.balance < amt) return socket.emit('message', { text: 'Insufficient funds.', type: 'error' });
-    
-    const t = await Player.findOne({ username: target });
-    if (!t) return socket.emit('message', { text: 'Target not found.', type: 'error' });
-
-    p.balance -= amt;
-    t.balance += amt;
-    t.inbox.push({ from: 'SYSTEM', msg: `Received ${amt} ODZ from ${user}.` });
-    
-    await p.save(); await t.save();
-    socket.emit('player_data', p);
-    socket.emit('message', { text: `Transferred ${amt} ODZ to ${target}.`, type: 'success' });
   });
 
   socket.on('inventory', async () => {
@@ -252,18 +219,35 @@ io.on('connection', (socket) => {
       socket.emit('message', { text: `INVENTORY: ${p.inventory.join(', ') || 'Empty'}`, type: 'info' });
   });
 
-  // 3. HACKING & PVP
-  socket.on('scan_player', async (target) => {
-      if (!user) return;
-      const t = await Player.findOne({ username: target });
-      if (!t) return socket.emit('message', { text: 'Target not found.', type: 'error' });
-      socket.emit('message', { text: `SCAN [${target}]:\nLvl: ${t.level} | Firewall: v${t.securityLevel}.0`, type: 'system' });
+  // 4. DAILY & LEADERBOARD
+  socket.on('daily', async () => {
+    if (!user) return;
+    let p = await Player.findOne({ username: user });
+    if (Date.now() - p.lastDaily < 86400000) return socket.emit('message', { text: 'Already claimed today.', type: 'error' });
+    
+    let reward = 100 * p.level;
+    const top5 = await Player.find().sort({ balance: -1 }).limit(5);
+    if (top5.some(x => x.username === user)) { reward += 500; socket.emit('message', { text: 'ELITE BONUS: +500', type: 'special' }); }
+    
+    p.balance += reward;
+    p.lastDaily = Date.now();
+    await p.save();
+    socket.emit('player_data', p);
+    socket.emit('message', { text: `Daily: +${reward} ODZ`, type: 'success' });
   });
 
+  socket.on('leaderboard', async () => {
+    const all = await Player.find();
+    const visible = all.filter(p => !p.inventory.includes('cloak_v1'));
+    const top = visible.sort((a, b) => b.balance - a.balance).slice(0, 5);
+    socket.emit('message', { text: `\n=== ELITE ===\n${top.map((p,i)=>`#${i+1} ${p.username} | ${p.balance} ODZ`).join('\n')}`, type: 'info' });
+  });
+
+  // 5. PVP HACKING
   socket.on('hack_init', async (targetName) => {
     if (!user || targetName === user) return;
     const target = await Player.findOne({ username: targetName });
-    if (!target) return socket.emit('message', { text: 'Offline/Invalid.', type: 'error' });
+    if (!target) return socket.emit('message', { text: 'Target offline/not found.', type: 'error' });
 
     let p = await Player.findOne({ username: user });
     if (Date.now() - p.lastHack < HACK_COOLDOWN) return socket.emit('message', { text: 'Cooldown Active.', type: 'warning' });
@@ -329,103 +313,95 @@ io.on('connection', (socket) => {
   });
 
   socket.on('brute_force', async (target) => {
-      // Must be in active hack to use
-      if (!ACTIVE_HACKS[user] || ACTIVE_HACKS[user].target !== target) {
-          socket.emit('message', { text: 'No active breach on this target.', type: 'error' });
-          return;
-      }
+      if (!ACTIVE_HACKS[user] || ACTIVE_HACKS[user].target !== target) return socket.emit('message', { text: 'No active breach.', type: 'error' });
       let p = await Player.findOne({ username: user });
-      if (!p.inventory.includes('brute_force_v1')) {
-          socket.emit('message', { text: 'Tool not installed.', type: 'error' });
-          return;
-      }
+      if (!p.inventory.includes('brute_force_v1')) return socket.emit('message', { text: 'Tool missing.', type: 'error' });
       
-      // Consume item? Maybe not consume, just cooldown? Let's consume for now.
-      const itemIdx = p.inventory.indexOf('brute_force_v1');
-      p.inventory.splice(itemIdx, 1);
+      const idx = p.inventory.indexOf('brute_force_v1');
+      p.inventory.splice(idx, 1);
       await p.save();
       
-      // Reveal one unknown digit
-      const session = ACTIVE_HACKS[user];
-      const unknowns = session.known.map((v, i) => v === '*' ? i : -1).filter(i => i !== -1);
-      if (unknowns.length > 0) {
-          const idx = unknowns[Math.floor(Math.random() * unknowns.length)];
-          session.known[idx] = session.pin[idx];
-          socket.emit('message', { text: `[BRUTE FORCE] Cracked digit ${idx+1}: ${session.pin[idx]}`, type: 'special' });
+      const s = ACTIVE_HACKS[user];
+      const unknown = s.known.map((v, i) => v === '*' ? i : -1).filter(i => i !== -1);
+      if (unknown.length > 0) {
+          const k = unknown[Math.floor(Math.random() * unknown.length)];
+          s.known[k] = s.pin[k];
+          socket.emit('message', { text: `[BRUTE] Cracked digit ${k+1}: ${s.pin[k]}`, type: 'special' });
           socket.emit('player_data', p);
-      } else {
-          socket.emit('message', { text: 'PIN already known.', type: 'info' });
       }
   });
 
-  // 4. MAZE & MISSIONS
-  socket.on('maze_start', () => {
+  // 6. SYSTEM (Theme, Mail, Transfer, Chat)
+  socket.on('set_theme', async (themeName) => {
       if(!user) return;
-      const maze = generateMaze(5); // 5x5 Grid
-      ACTIVE_MAZES[user] = { ...maze, x: 1, y: 1 };
-      socket.emit('message', { text: `ENTERING LABYRINTH...\nFind coordinates [${maze.exitX}, ${maze.exitY}].\nUse: nav n/s/e/w`, type: 'special' });
-  });
-
-  socket.on('navigate', (dir) => {
-      const m = ACTIVE_MAZES[user];
-      if(!m) return socket.emit('message', { text: 'Not in a maze.', type: 'error' });
-      
-      let newX = m.x, newY = m.y;
-      if (dir === 'n') newY--;
-      if (dir === 's') newY++;
-      if (dir === 'e') newX++;
-      if (dir === 'w') newX--;
-      
-      if (newX < 0 || newY < 0 || newX >= 5 || newY >= 5 || m.map[newY][newX] === 1) {
-          socket.emit('message', { text: 'Wall detected. Path blocked.', type: 'warning' });
-      } else {
-          m.x = newX; m.y = newY;
-          if (m.x === m.exitX && m.y === m.exitY) {
-              delete ACTIVE_MAZES[user];
-              socket.emit('message', { text: 'EXIT FOUND. Data secured (+50 ODZ).', type: 'success' });
-              // Give reward... (omitted for brevity, assume similar to mine)
-          } else {
-              socket.emit('message', { text: `Moved ${dir}. Pos: [${newX}, ${newY}]`, type: 'info' });
+      if (['green','amber','plasma','matrix'].includes(themeName)) {
+          let p = await Player.findOne({ username: user });
+          // Check ownership for premium themes
+          if (themeName !== 'green' && !p.inventory.includes(`theme_${themeName}`)) {
+              return socket.emit('message', { text: 'Theme locked. Buy in shop.', type: 'error' });
           }
+          p.theme = themeName;
+          await p.save();
+          socket.emit('player_data', p);
+          socket.emit('message', { text: `Theme set: ${themeName}`, type: 'success' });
       }
   });
 
-  // 5. SYSTEM (Files, Mail, Leaderboard)
-  socket.on('files', async () => {
-    if (!user) return;
-    const p = await Player.findOne({ username: user });
-    socket.emit('message', { text: `\n/ROOT:\n${p.files.join('\n')}`, type: 'info' });
+  socket.on('global_chat', (msg) => {
+      if(!user) return;
+      // Broadcast to everyone
+      io.emit('message', { text: `[CHAT] ${user}: ${msg}`, type: 'info' });
   });
 
-  socket.on('read', async (file) => {
-    if (!user) return;
-    const p = await Player.findOne({ username: user });
-    if (p.files.includes(file) && LORE_DB[file]) socket.emit('message', { text: `\n> ${file}\n${LORE_DB[file]}`, type: 'system' });
-    else socket.emit('message', { text: 'File corrupted/missing.', type: 'error' });
-  });
-
-  socket.on('mail_send', async ({ recipient, message }) => {
-      if (!user) return;
-      const t = await Player.findOne({ username: recipient });
-      if (!t) return socket.emit('message', { text: 'User not found.', type: 'error' });
-      t.inbox.push({ from: user, msg: message });
-      await t.save();
-      socket.emit('message', { text: 'Sent.', type: 'success' });
-  });
-
-  socket.on('mail_check', async () => {
-      if (!user) return;
+  socket.on('mail_read', async (idx) => {
+      if(!user) return;
       const p = await Player.findOne({ username: user });
-      if (!p.inbox.length) return socket.emit('message', { text: 'Inbox Empty.', type: 'info' });
-      socket.emit('message', { text: `\n=== INBOX ===\n${p.inbox.map((m,i)=>`[${i+1}] From: ${m.from} | "${m.msg}"`).join('\n')}`, type: 'info' });
+      const i = parseInt(idx) - 1;
+      if (p.inbox[i]) {
+          p.inbox[i].read = true;
+          await p.save();
+          socket.emit('message', { text: `Message marked read.`, type: 'success' });
+      }
   });
 
-  socket.on('daily', async () => { /* ... (Same as before) ... */ });
-  socket.on('leaderboard', async () => {
-    const all = await Player.find();
-    const visible = all.filter(p => !p.inventory.includes('cloak_v1'));
-    const top = visible.sort((a, b) => b.balance - a.balance).slice(0, 5);
-    socket.emit('message', { text: `\n=== ELITE ===\n${top.map((p,i)=>`#${i+1} ${p.username} | ${p.balance} ODZ`).join('\n')}`, type: 'info' });
+  socket.on('transfer', async ({ target, amount }) => {
+    if (!user) return;
+    const amt = parseInt(amount);
+    if (isNaN(amt) || amt <= 0) return socket.emit('message', { text: 'Invalid amount.', type: 'error' });
+    let p = await Player.findOne({ username: user });
+    if (p.balance < amt) return socket.emit('message', { text: 'Insufficient funds.', type: 'error' });
+    const t = await Player.findOne({ username: target });
+    if (!t) return socket.emit('message', { text: 'Target not found.', type: 'error' });
+
+    p.balance -= amt; t.balance += amt;
+    t.inbox.push({ from: 'SYSTEM', msg: `Received ${amt} ODZ from ${user}.`, read: false });
+    await p.save(); await t.save();
+    socket.emit('player_data', p);
+    socket.emit('message', { text: `Transferred ${amt} ODZ.`, type: 'success' });
+  });
+
+  // 7. MINIGAMES (Coinflip)
+  socket.on('coinflip', async ({ side, amount }) => {
+      if(!user) return;
+      const amt = parseInt(amount);
+      if(isNaN(amt) || amt <= 0) return socket.emit('message', { text: 'Invalid amount.', type: 'error' });
+      let p = await Player.findOne({ username: user });
+      if(p.balance < amt) return socket.emit('message', { text: 'Insufficient funds.', type: 'error' });
+
+      const result = Math.random() > 0.5 ? 'heads' : 'tails';
+      const win = (side.toLowerCase() === result);
+      
+      if(win) {
+          p.balance += amt; p.winsFlip++;
+          socket.emit('message', { text: `Result: ${result.toUpperCase()}. YOU WON +${amt} ODZ!`, type: 'success' });
+          socket.emit('play_sound', 'success');
+      } else {
+          p.balance -= amt; p.lossesFlip++;
+          socket.emit('message', { text: `Result: ${result.toUpperCase()}. You lost ${amt} ODZ.`, type: 'error' });
+          socket.emit('play_sound', 'error');
+      }
+      await p.save();
+      socket.emit('player_data', p);
   });
 
 });
