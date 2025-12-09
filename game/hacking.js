@@ -6,7 +6,6 @@ const SESSIONS = {};
 
 function generateFiles(diff) {
     const files = {};
-    // Chance for loot based on difficulty
     if (Math.random() > 0.5) files['user_data.txt'] = "Regular User Data";
     if (diff >= 3 && Math.random() > 0.7) files['wallet.dat'] = "ENCRYPTED_WALLET";
     if (diff >= 4) files['sys_core.log'] = "ROOT ACCESS LOG";
@@ -21,9 +20,6 @@ function generateSystem(diff) {
     const openPorts = [];
     const portKeys = Object.keys(PORTS);
     
-    // Logic: Higher difficulty -> fewer obvious vulnerabilities
-    // diff 1 (easy) -> 4 ports
-    // diff 5 (hard) -> 1 port
     let count = Math.max(1, 5 - diff); 
     if (diff === 1) count = 4; 
     
@@ -34,7 +30,7 @@ function generateSystem(diff) {
         }
     }
     
-    // CRITICAL FIX: Fallback if random selection failed or array empty
+    // Fallback if random selection failed
     if (openPorts.length === 0) {
         openPorts.push({ port: 80, ...PORTS[80] });
     }
@@ -42,43 +38,72 @@ function generateSystem(diff) {
     return { ip, os, ports: openPorts, files: generateFiles(diff) };
 }
 
-// --- 1. SCAN ---
+// --- 1. NETWORK SCANNER (New) ---
+async function handleNetScan(user, socket, Player) {
+    socket.emit('message', { text: "Scanning local subnet for active nodes...", type: 'loading' });
+    
+    // Simulate delay
+    await new Promise(r => setTimeout(r, 1500));
+
+    // 1. Find up to 3 random players (excluding self)
+    // We use a simple find and random sort since aggregate $sample can be slow on free tiers sometimes
+    const allPlayers = await Player.find({ username: { $ne: user } }).select('username security.firewall');
+    
+    // Shuffle and pick 3
+    const shuffled = allPlayers.sort(() => 0.5 - Math.random()).slice(0, 3);
+
+    // 2. NPC Fallbacks
+    const npcNames = ['Corp_Node_01', 'Bank_Relay_X', 'Gov_Uplink_Alpha', 'Unknown_Signal'];
+    
+    let msg = "\n=== NETWORK TOPOLOGY SCAN ===\n";
+    msg += "IP ADDRESS          | HOSTNAME         | SECURITY\n";
+    msg += "------------------------------------------------\n";
+
+    // List Real Players
+    shuffled.forEach(p => {
+        const ip = `192.168.${Math.floor(Math.random()*99)}.${Math.floor(Math.random()*255)}`;
+        const lvl = p.security ? p.security.firewall : 1;
+        msg += `${ip.padEnd(20)}| ${p.username.padEnd(17)}| Firewall v${lvl}\n`;
+    });
+
+    // List 1 Random NPC
+    const npc = npcNames[Math.floor(Math.random() * npcNames.length)];
+    const npcIp = `10.0.0.${Math.floor(Math.random()*255)}`;
+    msg += `${npcIp.padEnd(20)}| ${npc.padEnd(17)}| Firewall v2 (NPC)\n`;
+
+    msg += "\nType 'scan [hostname]' to perform detailed recon.";
+    socket.emit('message', { text: msg, type: 'info' });
+}
+
+// --- 2. DETAILED SCAN ---
 async function handleScan(user, args, socket, Player) {
     const target = args[0];
     if (!target) return socket.emit('message', { text: 'Usage: scan [ip/user]', type: 'error' });
 
     let t = await Player.findOne({ username: target });
     let diff = 1;
-    let name = target;
 
-    // PvP vs PvE check
     if (t) {
-        // Player target: difficulty based on their firewall upgrade
-        diff = t.security ? t.security.firewall : 1; 
+        diff = t.security ? t.security.firewall : 1;
     } else {
-        // NPC target
-        name = "Unknown Host";
-        diff = Math.floor(Math.random() * 5) + 1;
+        // NPC Logic
+        diff = Math.floor(Math.random() * 4) + 1;
     }
 
-    socket.emit('message', { text: `Scanning ${target}...`, type: 'loading' });
+    socket.emit('message', { text: `Targeting ${target}...`, type: 'loading' });
     await new Promise(r => setTimeout(r, 2000));
 
     const sys = generateSystem(diff);
     SESSIONS[user] = { target: target, sys: sys, stage: 'recon', accessLevel: 'none' };
 
-    let msg = `\nSCAN COMPLETE: ${sys.ip} (${sys.os})\nPORTS:\n`;
-    if (sys.ports.length === 0) {
-        msg += "No open ports found. (This shouldn't happen)\n";
-    } else {
-        sys.ports.forEach(p => msg += `[${p.port}] ${p.service} (Vuln: ${p.type})\n`);
-    }
+    let msg = `\nRECON REPORT: ${sys.ip} (${sys.os})\nOPEN PORTS:\n`;
+    sys.ports.forEach(p => msg += `[${p.port}] ${p.service} (Vuln: ${p.type})\n`);
     msg += `\nType 'exploit [port]' to attack.`;
 
     socket.emit('message', { text: msg, type: 'success' });
 }
 
-// --- 2. EXPLOIT ---
+// --- 3. EXPLOIT ---
 async function handleExploit(user, args, socket, Player) {
     const session = SESSIONS[user];
     if (!session) return socket.emit('message', { text: 'No active target. Scan first.', type: 'error' });
@@ -88,11 +113,9 @@ async function handleExploit(user, args, socket, Player) {
 
     if (!targetPort) return socket.emit('message', { text: `Port ${port} is closed or invalid.`, type: 'error' });
 
-    // Check Hardware Requirements
     let p = await Player.findOne({ username: user });
     
-    // RAM Check for complex exploits (diff > 2 needs 8GB+)
-    // Assuming p.hardware.ram is set. Default is 8.
+    // Hardware Check
     if (targetPort.diff > 2 && p.hardware.ram < 8) {
          return socket.emit('message', { text: `Insufficient RAM. Need upgrade to exploit Port ${port}.`, type: 'error' });
     }
@@ -117,10 +140,10 @@ async function handleExploit(user, args, socket, Player) {
     }
 }
 
-// --- 3. SHELL COMMANDS ---
+// --- 4. SHELL COMMANDS ---
 async function handleShell(user, cmd, args, socket, Player) {
     const session = SESSIONS[user];
-    if (!session || session.stage !== 'shell') return false; // Not handled here
+    if (!session || session.stage !== 'shell') return false; 
 
     if (cmd === 'ls') {
         const files = Object.keys(session.sys.files);
@@ -129,7 +152,6 @@ async function handleShell(user, cmd, args, socket, Player) {
     }
 
     if (cmd === 'privesc') {
-        // Privilege Escalation
         let p = await Player.findOne({ username: user });
         if (p.hardware.gpu < 1) {
              socket.emit('message', { text: 'GPU Required for Root Force attack.', type: 'error' });
@@ -155,7 +177,6 @@ async function handleShell(user, cmd, args, socket, Player) {
              return true;
         }
 
-        // Check Permissions
         if (file === 'sys_core.log' && session.accessLevel !== 'root') {
              socket.emit('message', { text: 'Permission Denied: Root Required.', type: 'error' });
              return true;
@@ -164,15 +185,13 @@ async function handleShell(user, cmd, args, socket, Player) {
         socket.emit('message', { text: `Downloading ${file}...`, type: 'loading' });
         await new Promise(r => setTimeout(r, 1500));
 
-        // Loot Logic
         let p = await Player.findOne({ username: user });
         if (file === 'wallet.dat') {
              const amt = Math.floor(Math.random() * 500) + 500;
              p.balance += amt;
              socket.emit('message', { text: `Decrypted Wallet: +${amt} ODZ`, type: 'success' });
         } else {
-             // Basic File
-             if (!p.files.includes(file)) p.files.push(file); // Add to local inventory
+             if (!p.files.includes(file)) p.files.push(file); 
              socket.emit('message', { text: `File saved to local storage.`, type: 'success' });
         }
         
@@ -181,14 +200,13 @@ async function handleShell(user, cmd, args, socket, Player) {
         return true;
     }
 
-    // Exit shell
     if (cmd === 'exit') {
         delete SESSIONS[user];
         socket.emit('message', { text: 'Connection Closed.', type: 'info' });
         return true;
     }
 
-    return false; // Command not found in shell
+    return false; 
 }
 
-module.exports = { handleScan, handleExploit, handleShell };
+module.exports = { handleNetScan, handleScan, handleExploit, handleShell };
