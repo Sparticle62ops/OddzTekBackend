@@ -4,26 +4,6 @@ const { PORTS, HACK_COOLDOWN, LOOT } = require('./constants');
 // Session Store: { user: { target, sys, stage, accessLevel } }
 const SESSIONS = {}; 
 
-// --- HELPER: GENERATE TARGET SYSTEM ---
-function generateSystem(diff) {
-    const ip = `192.168.${Math.floor(Math.random()*255)}.${Math.floor(Math.random()*255)}`;
-    const os = Math.random() > 0.5 ? 'Linux (Ubuntu)' : 'Windows Server 2019';
-    
-    // Determine open ports based on difficulty
-    const openPorts = [];
-    const portKeys = Object.keys(PORTS);
-    const count = Math.max(1, 5 - diff); // Harder targets have fewer, harder ports
-    
-    for(let i=0; i<count; i++) {
-        const p = portKeys[Math.floor(Math.random() * portKeys.length)];
-        if (!openPorts.find(x => x.port == p)) {
-            openPorts.push({ port: p, ...PORTS[p] });
-        }
-    }
-
-    return { ip, os, ports: openPorts, files: generateFiles(diff) };
-}
-
 function generateFiles(diff) {
     const files = {};
     // Chance for loot based on difficulty
@@ -31,6 +11,35 @@ function generateFiles(diff) {
     if (diff >= 3 && Math.random() > 0.7) files['wallet.dat'] = "ENCRYPTED_WALLET";
     if (diff >= 4) files['sys_core.log'] = "ROOT ACCESS LOG";
     return files;
+}
+
+// --- HELPER: GENERATE TARGET SYSTEM ---
+function generateSystem(diff) {
+    const ip = `192.168.${Math.floor(Math.random()*255)}.${Math.floor(Math.random()*255)}`;
+    const os = Math.random() > 0.5 ? 'Linux (Ubuntu)' : 'Windows Server 2019';
+    
+    const openPorts = [];
+    const portKeys = Object.keys(PORTS);
+    
+    // Logic: Higher difficulty -> fewer obvious vulnerabilities
+    // diff 1 (easy) -> 4 ports
+    // diff 5 (hard) -> 1 port
+    let count = Math.max(1, 5 - diff); 
+    if (diff === 1) count = 4; 
+    
+    for(let i=0; i<count; i++) {
+        const p = portKeys[Math.floor(Math.random() * portKeys.length)];
+        if (!openPorts.find(x => x.port == p)) {
+            openPorts.push({ port: parseInt(p), ...PORTS[p] });
+        }
+    }
+    
+    // CRITICAL FIX: Fallback if random selection failed or array empty
+    if (openPorts.length === 0) {
+        openPorts.push({ port: 80, ...PORTS[80] });
+    }
+
+    return { ip, os, ports: openPorts, files: generateFiles(diff) };
 }
 
 // --- 1. SCAN ---
@@ -44,9 +53,10 @@ async function handleScan(user, args, socket, Player) {
 
     // PvP vs PvE check
     if (t) {
-        diff = t.security.firewall;
+        // Player target: difficulty based on their firewall upgrade
+        diff = t.security ? t.security.firewall : 1; 
     } else {
-        // Assume NPC scan for now (simplified)
+        // NPC target
         name = "Unknown Host";
         diff = Math.floor(Math.random() * 5) + 1;
     }
@@ -58,7 +68,11 @@ async function handleScan(user, args, socket, Player) {
     SESSIONS[user] = { target: target, sys: sys, stage: 'recon', accessLevel: 'none' };
 
     let msg = `\nSCAN COMPLETE: ${sys.ip} (${sys.os})\nPORTS:\n`;
-    sys.ports.forEach(p => msg += `[${p.port}] ${p.service} (Vuln: ${p.type})\n`);
+    if (sys.ports.length === 0) {
+        msg += "No open ports found. (This shouldn't happen)\n";
+    } else {
+        sys.ports.forEach(p => msg += `[${p.port}] ${p.service} (Vuln: ${p.type})\n`);
+    }
     msg += `\nType 'exploit [port]' to attack.`;
 
     socket.emit('message', { text: msg, type: 'success' });
@@ -72,12 +86,13 @@ async function handleExploit(user, args, socket, Player) {
     const port = args[0];
     const targetPort = session.sys.ports.find(p => p.port == port);
 
-    if (!targetPort) return socket.emit('message', { text: `Port ${port} is closed.`, type: 'error' });
+    if (!targetPort) return socket.emit('message', { text: `Port ${port} is closed or invalid.`, type: 'error' });
 
     // Check Hardware Requirements
     let p = await Player.findOne({ username: user });
     
-    // RAM Check for complex exploits
+    // RAM Check for complex exploits (diff > 2 needs 8GB+)
+    // Assuming p.hardware.ram is set. Default is 8.
     if (targetPort.diff > 2 && p.hardware.ram < 8) {
          return socket.emit('message', { text: `Insufficient RAM. Need upgrade to exploit Port ${port}.`, type: 'error' });
     }
@@ -85,9 +100,9 @@ async function handleExploit(user, args, socket, Player) {
     socket.emit('message', { text: `Running ${targetPort.type}...`, type: 'loading' });
     await new Promise(r => setTimeout(r, 2500));
 
-    // Success Chance (GPU helps here)
+    // Success Chance
     const baseChance = 0.5;
-    const gpuBonus = p.hardware.gpu * 0.1; // 10% per GPU level
+    const gpuBonus = (p.hardware.gpu || 0) * 0.1; 
     const chance = baseChance + gpuBonus;
 
     if (Math.random() < chance) {
@@ -105,7 +120,7 @@ async function handleExploit(user, args, socket, Player) {
 // --- 3. SHELL COMMANDS ---
 async function handleShell(user, cmd, args, socket, Player) {
     const session = SESSIONS[user];
-    if (!session || session.stage !== 'shell') return false; // Pass through
+    if (!session || session.stage !== 'shell') return false; // Not handled here
 
     if (cmd === 'ls') {
         const files = Object.keys(session.sys.files);
@@ -141,7 +156,7 @@ async function handleShell(user, cmd, args, socket, Player) {
         }
 
         // Check Permissions
-        if (file === 'wallet.dat' && session.accessLevel !== 'root') {
+        if (file === 'sys_core.log' && session.accessLevel !== 'root') {
              socket.emit('message', { text: 'Permission Denied: Root Required.', type: 'error' });
              return true;
         }
