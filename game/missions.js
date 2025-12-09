@@ -10,7 +10,7 @@ const MISSION_OFFERS = {};
 
 function generateJob(level) {
     const types = ['Heist', 'Hunt', 'Defense'];
-    // Weight types: Heist (50%), Defense (30%), Hunt (20%)
+    // Weighted random selection
     const roll = Math.random();
     let type = 'Heist';
     if (roll > 0.5) type = 'Defense';
@@ -79,13 +79,14 @@ async function acceptJob(user, args, socket, Player) {
     // Set Active Mission
     p.missionProgress = {
         active: job.type.toLowerCase(),
-        stage: 1, // 1: Connect, 2: Firewall, 3: Navigate, 4: Download
+        stage: 1, 
         jobId: job.id,
         targetName: job.targetName,
         difficulty: job.difficulty,
         reward: job.reward
     };
     
+    p.markModified('missionProgress'); // CRITICAL FIX: Ensures saving
     await p.save();
     socket.emit('player_data', p);
     
@@ -101,7 +102,7 @@ async function acceptJob(user, args, socket, Player) {
     }
 }
 
-// --- HEIST MISSION HANDLERS ---
+// --- MISSION EXECUTION HANDLERS ---
 
 async function handleServerHackStart(user, socket, Player) {
     let p = await Player.findOne({ username: user });
@@ -114,7 +115,7 @@ async function handleServerHackStart(user, socket, Player) {
         return socket.emit('message', { text: 'Uplink already established. Check status.', type: 'warning' });
     }
 
-    // Hardware Check based on difficulty
+    // Hardware Check
     const reqCpu = Math.ceil(p.missionProgress.difficulty / 2);
     if (p.hardware.cpu < reqCpu) {
          return socket.emit('message', { text: `Hardware Insufficient. Need CPU v${reqCpu}.`, type: 'error' });
@@ -139,6 +140,7 @@ async function handleNavigate(user, args, socket, Player) {
     if (stage === 1) {
         if (['n','north','forward'].includes(dir)) {
             p.missionProgress.stage = 2;
+            p.markModified('missionProgress');
             await p.save();
             socket.emit('message', { text: `[FIREWALL ENCOUNTER]\nEncryption detected.\nType 'decrypt' to break.`, type: 'warning' });
         } else {
@@ -149,6 +151,7 @@ async function handleNavigate(user, args, socket, Player) {
     else if (stage === 3) {
          if (['n','north','forward'].includes(dir)) {
              p.missionProgress.stage = 4;
+             p.markModified('missionProgress');
              await p.save();
              socket.emit('message', { text: `[CORE REACHED]\nData payload found.\nType 'download' to extract.`, type: 'success' });
          }
@@ -157,12 +160,12 @@ async function handleNavigate(user, args, socket, Player) {
 
 async function handleDownload(user, socket, Player) {
     let p = await Player.findOne({ username: user });
-    // Handle Heist Download
     if (p.missionProgress && p.missionProgress.active === 'heist' && p.missionProgress.stage === 4) {
         const reward = p.missionProgress.reward;
         p.balance += reward;
         p.xp += p.missionProgress.difficulty * 50;
         p.missionProgress = {}; // Clear mission
+        p.markModified('missionProgress');
         await p.save();
 
         socket.emit('message', { text: `DATA SECURED.\nContract Complete.\nPayment Transferred: +${reward} ODZ`, type: 'success' });
@@ -170,7 +173,6 @@ async function handleDownload(user, socket, Player) {
         socket.emit('play_sound', 'success');
         return;
     }
-    // Allow pass-through for 'cat' command alias if needed, but handled by Shell usually
     socket.emit('message', { text: 'No downloadable assets found.', type: 'error' });
 }
 
@@ -183,12 +185,10 @@ async function handleDefenseAction(user, action, socket, Player) {
         return socket.emit('message', { text: 'No active Defense contract.', type: 'error' });
     }
     
-    // Skill Check: Network Level vs Mission Difficulty
     const diff = p.missionProgress.difficulty;
-    const defenseScore = p.hardware.networkLevel + (Math.random() * 3); // 1-3 base random
+    const defenseScore = p.hardware.networkLevel + (Math.random() * 3); 
     
     socket.emit('message', { text: `Running ${action} protocol...`, type: 'loading' });
-    // Simulate delay? No, defense should be snappy.
 
     if (defenseScore >= diff) {
         // Success
@@ -209,9 +209,9 @@ async function handleDefenseAction(user, action, socket, Player) {
         // Fail
         socket.emit('message', { text: `[FAILURE] Firewall breached! Connection unstable. Try again!`, type: 'error' });
         socket.emit('play_sound', 'error');
-        // Optional: Reduce reward or fail mission entirely? Let's just not advance stage.
     }
+    p.markModified('missionProgress');
     await p.save();
 }
 
-module.exports = { listJobs, acceptJob, handleServerHackStart, handleNavigate, handleDownload, handleDefenseAction, handleMazeStart: null };
+module.exports = { listJobs, acceptJob, handleServerHackStart, handleNavigate, handleDownload, handleDefenseAction, generateMaze: null };
