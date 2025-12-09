@@ -1,15 +1,14 @@
 // game/commands.js
-const { handleMine, handleShop, handleBuy, handleDaily, handleTransfer } = require('./economy');
-const { handleScan, handleExploit, handleShell } = require('./hacking'); 
+const { handleMine, handleShop, handleBuy, handleDaily, handleTransfer, handleCollect } = require('./economy');
+const { handleScan, handleExploit, handleShell, handleNetScan } = require('./hacking'); 
 const { handleCoinflip, handleDice, handleSlots } = require('./activities');
-// Ensure ALL mission handlers are imported
 const { handleMazeStart, handleNavigate, handleServerHackStart, listJobs, acceptJob, handleDownload, handleDefenseAction } = require('./missions');
 
 async function handleSystem(user, command, args, socket, Player, io) {
     let p = await Player.findOne({ username: user });
+    if (!p) return;
     
     // --- 1. SHELL INTERCEPT (For Active Hacking Sessions) ---
-    // If handleShell returns true, it consumed the command (ls, cd, cat in remote system)
     const handledByShell = await handleShell(user, command, args, socket, Player);
     if (handledByShell) return;
 
@@ -19,7 +18,6 @@ async function handleSystem(user, command, args, socket, Player, io) {
         case 'theme':
             const t = args[0];
             if (['green','amber','plasma','matrix','red'].includes(t)) {
-                // Check for Premium Themes
                 if (t !== 'green' && !p.inventory.includes(`theme_${t}`)) {
                     return socket.emit('message', { text: `Theme '${t}' is locked. Buy in shop.`, type: 'error' });
                 }
@@ -39,14 +37,13 @@ async function handleSystem(user, command, args, socket, Player, io) {
             break;
             
         case 'files':
-        case 'ls': // Local Alias
+        case 'ls':
             socket.emit('message', { text: `\n/ROOT (${p.files.length} files):\n${p.files.join('\n')}`, type: 'info' });
             break;
 
         case 'read':
-        case 'cat': // Local Alias
+        case 'cat':
             const f = args[0];
-            // Define Lore
             const LORE = {
                 'readme.txt': "Welcome to Oddztek OS. This system is monitored. Unauthorized access is prohibited.",
                 'server_log.txt': "FATAL ERROR 10-12-99: Core temperature critical. Automatic shutdown failed.",
@@ -126,6 +123,8 @@ async function handleSystem(user, command, args, socket, Player, io) {
         case 'buy': await handleBuy(user, args, socket, Player); break;
         case 'daily': await handleDaily(user, socket, Player); break;
         case 'transfer': await handleTransfer(user, args, socket, Player); break;
+        
+        case 'collect': await handleCollect(user, socket, Player); break; // NEW
 
         // --- ACTIVITY MODULES ---
         case 'flip':
@@ -134,30 +133,53 @@ async function handleSystem(user, command, args, socket, Player, io) {
         case 'slots': await handleSlots(user, args, Player, socket); break;
 
         // --- HACKING MODULES ---
+        case 'netscan':
+        case 'targets': await handleNetScan(user, socket, Player); break; // NEW
+
         case 'scan': await handleScan(user, args, socket, Player); break;
         case 'exploit': await handleExploit(user, args, socket, Player); break;
-        // 'privesc' is aliased in handleShell logic in hacking.js, but good to have fallback if needed
+        
+        case 'hack': 
+             socket.emit('message', { text: "Legacy Protocol. Use 'netscan' to find targets, then 'scan [ip]' and 'exploit [port]'.", type: 'info' });
+             break;
+
+        case 'brute': 
+             socket.emit('message', { text: "Brute Force is now an automatic module used during 'exploit'.", type: 'info' });
+             break;
 
         // --- MISSION MODULES ---
         case 'jobs': listJobs(user, socket, Player); break;
         case 'accept': await acceptJob(user, args, socket, Player); break;
-        
-        // Mission Steps
         case 'server_hack': await handleServerHackStart(user, socket, Player); break;
         case 'nav':
         case 'move': await handleNavigate(user, args, socket, Player); break;
         case 'download': await handleDownload(user, socket, Player); break;
         
-        // Defense Mission
         case 'block':
         case 'patch':
              await handleDefenseAction(user, command, socket, Player);
              break;
 
-        // Puzzles (Legacy - Optional, can remove if missions cover it)
+        // Puzzles
         case 'decrypt':
-             // Can add simple puzzle logic here if desired, otherwise rely on missions
-             socket.emit('message', { text: "No active encryption to break.", type: 'warning' });
+             if (p.missionProgress && p.missionProgress.stage === 2) { 
+                 socket.puzzleAnswer = "OVERRIDE";
+                 socket.emit('message', { text: `[FIREWALL LOCK] Unscramble: "DERRVIEO"\nType: solve [answer]`, type: 'special' });
+             } else {
+                 socket.emit('message', { text: "No active encryption lock detected.", type: 'warning' });
+             }
+             break;
+        case 'solve':
+             if(socket.puzzleAnswer && args[0].toUpperCase() === socket.puzzleAnswer) {
+                 if(p.missionProgress && p.missionProgress.stage === 2) {
+                     p.missionProgress.stage = 3; 
+                     p.markModified('missionProgress');
+                     await p.save();
+                     socket.emit('message', { text: "FIREWALL BREACHED. Accessing internal network...\nType 'nav forward' to find the core.", type: 'success' });
+                 }
+                 socket.puzzleAnswer = null;
+                 socket.emit('play_sound', 'success');
+             } else socket.emit('message', { text: "Incorrect.", type: 'error' });
              break;
 
         default:
