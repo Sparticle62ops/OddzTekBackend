@@ -1,20 +1,24 @@
 // game/commands.js
+
+// 1. Import Logic Modules
 const { handleMine, handleShop, handleBuy, handleDaily, handleTransfer } = require('./economy');
 const { handleScan, handleExploit, handleShell } = require('./hacking'); 
 const { handleCoinflip, handleDice, handleSlots } = require('./activities');
-// Ensure handleDefenseAction is exported from missions.js before using
+// Ensure handleDefenseAction is imported here
 const { handleMazeStart, handleNavigate, handleServerHackStart, listJobs, acceptJob, handleDownload, handleDefenseAction } = require('./missions');
 
 async function handleSystem(user, command, args, socket, Player, io) {
+    // 2. Fetch Player Data
     let p = await Player.findOne({ username: user });
+    if (!p) return; // Should not happen if authenticated, but safe check
     
-    // --- 1. SHELL INTERCEPT (For Active Hacking Sessions) ---
+    // --- 3. SHELL INTERCEPT (For Active Hacking Sessions) ---
     // If handleShell returns true, it consumed the command (ls, cd, cat in remote system)
     // Note: We prioritize shell commands only if a session exists
     const handledByShell = await handleShell(user, command, args, socket, Player);
     if (handledByShell) return;
 
-    // --- 2. STANDARD COMMANDS ---
+    // --- 4. STANDARD COMMAND ROUTING ---
     switch (command) {
         // --- SYSTEM UTILITIES ---
         case 'theme':
@@ -45,8 +49,9 @@ async function handleSystem(user, command, args, socket, Player, io) {
             break;
 
         case 'read':
+        case 'cat': // Read file alias
             const f = args[0];
-            // Define Lore locally or import constants
+            // Define Lore locally (or import constants if preferred)
             const LORE = {
                 'readme.txt': "Welcome to Oddztek OS. This system is monitored. Unauthorized access is prohibited.",
                 'server_log.txt': "FATAL ERROR 10-12-99: Core temperature critical. Automatic shutdown failed.",
@@ -127,27 +132,23 @@ async function handleSystem(user, command, args, socket, Player, io) {
         case 'daily': await handleDaily(user, socket, Player); break;
         case 'transfer': await handleTransfer(user, args, socket, Player); break;
 
-        // --- ACTIVITY MODULES ---
+        // --- ACTIVITY MODULES (Fixed Missing Commands) ---
         case 'flip':
         case 'coinflip': await handleCoinflip(user, args, Player, socket); break;
         case 'dice': await handleDice(user, args, Player, socket); break;
         case 'slots': await handleSlots(user, args, Player, socket); break;
 
-        // --- HACKING MODULES (NEW SYSTEM) ---
+        // --- HACKING MODULES (Unified System) ---
         case 'scan': await handleScan(user, args, socket, Player); break;
         case 'exploit': await handleExploit(user, args, socket, Player); break;
         
-        // 'privesc', 'ls', 'cat' are handled by handleShell intercept above
-        // We keep 'hack' here for legacy or specific missions if needed, 
-        // but the new system relies on 'scan' -> 'exploit'.
+        // 'privesc', 'ls', 'cat' (Remote) are handled by handleShell intercept above
+        // We keep 'hack' here to guide users to the new system
         case 'hack': 
-             // Redirect to Scan prompt or explain new system
              socket.emit('message', { text: "Legacy Protocol. Use 'scan [target]' then 'exploit [port]'.", type: 'info' });
              break;
 
         case 'brute': 
-             // Tool for cracking FTP/SSH in new system?
-             // Or keep old logic? Let's point to new system help.
              socket.emit('message', { text: "Brute Force is now an automatic module used during 'exploit'.", type: 'info' });
              break;
 
@@ -155,12 +156,13 @@ async function handleSystem(user, command, args, socket, Player, io) {
         case 'jobs': listJobs(user, socket, Player); break;
         case 'accept': await acceptJob(user, args, socket, Player); break;
         
+        // These handle specific mission steps
         case 'server_hack': await handleServerHackStart(user, socket, Player); break;
         case 'nav':
         case 'move': await handleNavigate(user, args, socket, Player); break;
         case 'download': await handleDownload(user, socket, Player); break;
         
-        // Defense Mission Commands
+        // Defense Mission Commands (Fixed Missing Logic)
         case 'block':
         case 'patch':
              await handleDefenseAction(user, command, socket, Player);
@@ -178,7 +180,9 @@ async function handleSystem(user, command, args, socket, Player, io) {
         case 'solve':
              if(socket.puzzleAnswer && args[0].toUpperCase() === socket.puzzleAnswer) {
                  if(p.missionProgress && p.missionProgress.stage === 2) {
-                     p.missionProgress.stage = 3; await p.save();
+                     p.missionProgress.stage = 3; 
+                     p.markModified('missionProgress'); // Critical persistence fix
+                     await p.save();
                      socket.emit('message', { text: "FIREWALL BREACHED. Accessing internal network...\nType 'nav forward' to find the core.", type: 'success' });
                  }
                  socket.puzzleAnswer = null;
