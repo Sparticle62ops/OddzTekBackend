@@ -37,7 +37,8 @@ async function handleSystem(user, command, args, socket, Player, io) {
             else socket.emit('message', { text: 'Usage: chat [message]', type: 'error' });
             break;
             
-        case 'files':
+       case 'files':
+        case 'ls': // ADD THIS ALIAS
             socket.emit('message', { text: `\n/ROOT (${p.files.length} files):\n${p.files.join('\n')}`, type: 'info' });
             break;
 
