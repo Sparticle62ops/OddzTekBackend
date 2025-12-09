@@ -2,13 +2,15 @@
 const { handleMine, handleShop, handleBuy, handleDaily, handleTransfer } = require('./economy');
 const { handleScan, handleExploit, handleShell } = require('./hacking'); 
 const { handleCoinflip, handleDice, handleSlots } = require('./activities');
-const { handleMazeStart, handleNavigate, handleServerHackStart, listJobs, acceptJob, handleDownload } = require('./missions');
+// Ensure handleDefenseAction is exported from missions.js before using
+const { handleMazeStart, handleNavigate, handleServerHackStart, listJobs, acceptJob, handleDownload, handleDefenseAction } = require('./missions');
 
 async function handleSystem(user, command, args, socket, Player, io) {
     let p = await Player.findOne({ username: user });
     
     // --- 1. SHELL INTERCEPT (For Active Hacking Sessions) ---
     // If handleShell returns true, it consumed the command (ls, cd, cat in remote system)
+    // Note: We prioritize shell commands only if a session exists
     const handledByShell = await handleShell(user, command, args, socket, Player);
     if (handledByShell) return;
 
@@ -20,7 +22,7 @@ async function handleSystem(user, command, args, socket, Player, io) {
             if (['green','amber','plasma','matrix','red'].includes(t)) {
                 // Check for Premium Themes
                 if (t !== 'green' && !p.inventory.includes(`theme_${t}`)) {
-                    return socket.emit('message', { text: `Theme '${t}' is locked. Buy access in shop.`, type: 'error' });
+                    return socket.emit('message', { text: `Theme '${t}' is locked. Buy in shop.`, type: 'error' });
                 }
                 p.theme = t; 
                 await p.save();
@@ -37,20 +39,21 @@ async function handleSystem(user, command, args, socket, Player, io) {
             else socket.emit('message', { text: 'Usage: chat [message]', type: 'error' });
             break;
             
-       case 'files':
-        case 'ls': // ADD THIS ALIAS
+        case 'files':
+        case 'ls': // Local file list alias
             socket.emit('message', { text: `\n/ROOT (${p.files.length} files):\n${p.files.join('\n')}`, type: 'info' });
             break;
 
         case 'read':
             const f = args[0];
-            // Define Lore locally or import constants if needed
+            // Define Lore locally or import constants
             const LORE = {
                 'readme.txt': "Welcome to Oddztek OS. This system is monitored. Unauthorized access is prohibited.",
                 'server_log.txt': "FATAL ERROR 10-12-99: Core temperature critical. Automatic shutdown failed.",
                 'user_data.txt': "User List: Admin, Guest, System...",
                 'wallet.dat': "Encrypted Wallet File. (Decrypted: +500 ODZ)",
-                'sys_core.log': "System Core Dump: Root Access trace found."
+                'sys_core.log': "System Core Dump: Root Access trace found.",
+                'server_log_01.txt': "Sector 7 failure. Containment breach imminent."
             };
             
             if (p.files.includes(f)) {
@@ -134,21 +137,54 @@ async function handleSystem(user, command, args, socket, Player, io) {
         case 'scan': await handleScan(user, args, socket, Player); break;
         case 'exploit': await handleExploit(user, args, socket, Player); break;
         
-        // 'privesc' is handled inside handleShell via alias, but we keep this case just in case
-        // the user calls it outside a session (where it should fail)
-        case 'privesc': 
-            socket.emit('message', { text: 'No active shell session. Exploit a target first.', type: 'error' }); 
-            break;
+        // 'privesc', 'ls', 'cat' are handled by handleShell intercept above
+        // We keep 'hack' here for legacy or specific missions if needed, 
+        // but the new system relies on 'scan' -> 'exploit'.
+        case 'hack': 
+             // Redirect to Scan prompt or explain new system
+             socket.emit('message', { text: "Legacy Protocol. Use 'scan [target]' then 'exploit [port]'.", type: 'info' });
+             break;
+
+        case 'brute': 
+             // Tool for cracking FTP/SSH in new system?
+             // Or keep old logic? Let's point to new system help.
+             socket.emit('message', { text: "Brute Force is now an automatic module used during 'exploit'.", type: 'info' });
+             break;
 
         // --- MISSION MODULES ---
         case 'jobs': listJobs(user, socket, Player); break;
         case 'accept': await acceptJob(user, args, socket, Player); break;
         
-        // Legacy Mission Commands (Can be removed or kept for specific mission types)
         case 'server_hack': await handleServerHackStart(user, socket, Player); break;
         case 'nav':
         case 'move': await handleNavigate(user, args, socket, Player); break;
         case 'download': await handleDownload(user, socket, Player); break;
+        
+        // Defense Mission Commands
+        case 'block':
+        case 'patch':
+             await handleDefenseAction(user, command, socket, Player);
+             break;
+
+        // Puzzles (Legacy or Mission specific)
+        case 'decrypt':
+             if (p.missionProgress && p.missionProgress.stage === 2) { // Stage 2 = Firewall
+                 socket.puzzleAnswer = "OVERRIDE";
+                 socket.emit('message', { text: `[FIREWALL LOCK] Unscramble: "DERRVIEO"\nType: solve [answer]`, type: 'special' });
+             } else {
+                 socket.emit('message', { text: "No active encryption lock detected.", type: 'warning' });
+             }
+             break;
+        case 'solve':
+             if(socket.puzzleAnswer && args[0].toUpperCase() === socket.puzzleAnswer) {
+                 if(p.missionProgress && p.missionProgress.stage === 2) {
+                     p.missionProgress.stage = 3; await p.save();
+                     socket.emit('message', { text: "FIREWALL BREACHED. Accessing internal network...\nType 'nav forward' to find the core.", type: 'success' });
+                 }
+                 socket.puzzleAnswer = null;
+                 socket.emit('play_sound', 'success');
+             } else socket.emit('message', { text: "Incorrect.", type: 'error' });
+             break;
 
         default:
             socket.emit('message', { text: `Unknown command: '${command}'. Type 'help'.`, type: 'error' });
