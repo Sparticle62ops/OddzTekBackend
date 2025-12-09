@@ -1,10 +1,19 @@
 // game/economy.js
-const { SHOP_ITEMS, LEVEL_XP_REQ, BASE_MINE_COOLDOWN, MINE_DURATION, MINE_TICK } = require('./constants'); // We will make constants.js next
+const { SHOP_ITEMS, LEVEL_XP_REQ, MINE_DURATION, MINE_TICK } = require('./constants'); 
 
 const ACTIVE_MINERS = new Set();
 
-function getCooldown(p) { 
-    return Math.max(5000, BASE_MINE_COOLDOWN * (1 - (p.networkLevel - 1) * 0.1)); 
+function getMiningYield(player) {
+    // Base Calculation: (Random 5-10) * CPU Level
+    let base = Math.floor(Math.random() * 5) + 5;
+    let multiplier = player.hardware.cpu || 1;
+    
+    // Server Rack Bonus (Passive, but added to active mining for impact)
+    if (player.hardware.servers > 0) {
+        multiplier += (player.hardware.servers * 0.5); 
+    }
+    
+    return Math.floor(base * multiplier);
 }
 
 // --- MINING ---
@@ -12,30 +21,31 @@ async function handleMine(user, socket, Player) {
     if (!user || ACTIVE_MINERS.has(user)) return;
     
     let p = await Player.findOne({ username: user });
-    const now = Date.now();
-    const cd = getCooldown(p);
     
-    if (now - p.lastMine < cd) {
-        const wait = Math.ceil((cd - (now - p.lastMine))/1000);
+    // Cooldown Logic (Reduced by Network Level)
+    const now = Date.now();
+    const baseCd = 20000;
+    const reduction = (p.hardware.networkLevel || 1 - 1) * 2000; // 2s reduction per level
+    const actualCd = Math.max(5000, baseCd - reduction);
+    
+    if (now - p.lastMine < actualCd) {
+        const wait = Math.ceil((actualCd - (now - p.lastMine))/1000);
         return socket.emit('message', { text: `System Overheated. Cooling down... (${wait}s)`, type: 'warning' });
     }
 
     ACTIVE_MINERS.add(user);
-    socket.emit('message', { text: `[MINER v${p.cpuLevel}.0] Cycle started (${MINE_DURATION/1000}s)...`, type: 'system' });
+    socket.emit('message', { text: `[MINER v${p.hardware.cpu}.0] Cycle started...`, type: 'system' });
     socket.emit('play_sound', 'click');
 
     let ticks = 0;
     const totalTicks = MINE_DURATION / MINE_TICK;
 
     const interval = setInterval(async () => {
-        // Re-fetch player to ensure balance is current if they did other stuff
-        // p = await Player.findOne({ username: user }); 
         if (!ACTIVE_MINERS.has(user)) { clearInterval(interval); return; }
         
         ticks++;
-        const amt = (Math.floor(Math.random()*5)+5) * p.cpuLevel;
+        const amt = getMiningYield(p);
         
-        // Atomic update for safety
         p = await Player.findOneAndUpdate(
             { username: user }, 
             { $inc: { balance: amt, xp: 10 } }, 
@@ -50,10 +60,8 @@ async function handleMine(user, socket, Player) {
             ACTIVE_MINERS.delete(user);
             p.lastMine = Date.now();
             
-            // Level Up Check
             if (p.xp >= p.level * LEVEL_XP_REQ) {
-                p.level++;
-                p.xp = 0;
+                p.level++; p.xp = 0;
                 socket.emit('message', { text: `*** SYSTEM UPGRADE: LEVEL ${p.level} ***`, type: 'special' });
                 socket.emit('play_sound', 'success');
             }
@@ -68,8 +76,22 @@ async function handleMine(user, socket, Player) {
 // --- SHOP ---
 function handleShop(socket) {
     let msg = "\n=== BLACK MARKET ===\n";
+    // Group items by type for cleaner display
+    const groups = { 'Hardware': [], 'Software': [], 'Security': [], 'Cosmetic': [] };
+    
     for (const [id, item] of Object.entries(SHOP_ITEMS)) {
-        msg += `[${id.padEnd(14)}] ${item.price} ODZ - ${item.desc}\n`;
+        let cat = 'Software';
+        if (item.type === 'hardware' || item.type === 'infrastructure') cat = 'Hardware';
+        if (item.type === 'security') cat = 'Security';
+        if (item.type === 'skin') cat = 'Cosmetic';
+        
+        groups[cat].push(`[${id.padEnd(14)}] ${item.price} ODZ - ${item.desc} [${item.rarity.toUpperCase()}]`);
+    }
+
+    for (const [cat, items] of Object.entries(groups)) {
+        if (items.length > 0) {
+            msg += `\n-- ${cat.toUpperCase()} --\n${items.join('\n')}\n`;
+        }
     }
     socket.emit('message', { text: msg, type: 'info' });
 }
@@ -83,25 +105,43 @@ async function handleBuy(user, args, socket, Player) {
     let p = await Player.findOne({ username: user });
     if (p.balance < item.price) return socket.emit('message', { text: 'Insufficient Funds.', type: 'error' });
 
-    // Inventory Limit
-    const count = p.inventory.filter(i => i === id).length;
-    if (item.type !== 'upgrade' && item.type !== 'skin' && count >= 2) {
-        return socket.emit('message', { text: 'Inventory Limit (Max 2).', type: 'error' });
-    }
-
+    // Deduct Cost
     p.balance -= item.price;
 
-    if (item.type === 'upgrade') {
-        if (p[item.stat] >= item.val) return socket.emit('message', { text: 'Upgrade already installed.', type: 'error' });
-        p[item.stat] = item.val;
-        socket.emit('message', { text: `Hardware Installed: ${id}`, type: 'success' });
-    } else if (id === 'honeypot') {
-        p.activeHoneypot = true;
-        socket.emit('message', { text: 'Honeypot Trap ARMED.', type: 'special' });
-    } else {
-        if (item.type === 'skin') p.theme = item.val;
-        else p.inventory.push(id);
-        socket.emit('message', { text: `Purchased: ${id}`, type: 'success' });
+    // --- APPLY ITEM EFFECT ---
+    
+    if (item.type === 'hardware') {
+        // Upgrade specific hardware slot (CPU/GPU/RAM)
+        if (p.hardware[item.slot] >= item.val) {
+             return socket.emit('message', { text: 'Better hardware already installed.', type: 'error' });
+        }
+        p.hardware[item.slot] = item.val;
+        socket.emit('message', { text: `Hardware Installed: ${id} (Level ${item.val})`, type: 'success' });
+    } 
+    else if (item.type === 'infrastructure') {
+        // Server Rack
+        if (id === 'server_rack') {
+            p.hardware.servers = (p.hardware.servers || 0) + 1;
+            socket.emit('message', { text: `Server Node Added. Passive Generation Increased.`, type: 'special' });
+        }
+    }
+    else if (item.type === 'security') {
+        // Firewall
+        p.security.firewall = Math.max(p.security.firewall, item.val);
+        socket.emit('message', { text: `Security Upgrade: Firewall Level ${item.val}`, type: 'success' });
+    }
+    else if (item.type === 'skin') {
+        p.theme = item.val;
+        socket.emit('message', { text: `Theme Applied: ${item.val}`, type: 'success' });
+    }
+    else {
+        // Standard Inventory (Software/Consumables)
+        // Check Limit
+        const count = p.inventory.filter(i => i === id).length;
+        if (count >= 2) return socket.emit('message', { text: 'Inventory Full (Max 2).', type: 'error' });
+        
+        p.inventory.push(id);
+        socket.emit('message', { text: `Software Downloaded: ${id}`, type: 'success' });
     }
 
     await p.save();
@@ -109,7 +149,7 @@ async function handleBuy(user, args, socket, Player) {
     socket.emit('play_sound', 'success');
 }
 
-// --- DAILY ---
+// --- DAILY REWARD ---
 async function handleDaily(user, socket, Player) {
     let p = await Player.findOne({ username: user });
     const now = Date.now();
@@ -121,11 +161,11 @@ async function handleDaily(user, socket, Player) {
 
     let reward = 100 * p.level;
     
-    // Top 5 Bonus Check
-    const top5 = await Player.find().sort({ balance: -1 }).limit(5);
-    if (top5.some(x => x.username === user)) {
-        reward += 500;
-        socket.emit('message', { text: `ELITE HACKER BONUS: +500 ODZ`, type: 'special' });
+    // Server Rack Bonus (Passive Income)
+    if (p.hardware.servers > 0) {
+        const passive = p.hardware.servers * 500;
+        reward += passive;
+        socket.emit('message', { text: `[PASSIVE INCOME] Server Racks generated ${passive} ODZ.`, type: 'info' });
     }
 
     p.balance += reward;
@@ -133,7 +173,7 @@ async function handleDaily(user, socket, Player) {
     await p.save();
     
     socket.emit('player_data', p);
-    socket.emit('message', { text: `Daily Login: +${reward} ODZ`, type: 'success' });
+    socket.emit('message', { text: `Daily Reward: +${reward} ODZ`, type: 'success' });
 }
 
 // --- TRANSFER ---

@@ -1,129 +1,156 @@
 // game/commands.js
 const { handleMine, handleShop, handleBuy, handleDaily, handleTransfer } = require('./economy');
-const { handleScan, handleHackInit, handleGuess, handleBrute } = require('./hacking');
-const { handleCoinflip, handleDice, handleSlots } = require('./activities'); // Added activities
-const { handleMazeStart, handleNavigate, handleServerHackStart } = require('./missions');
-const mongoose = require('mongoose');
+const { handleScan, handleExploit, handleShell } = require('./hacking'); 
+const { handleCoinflip, handleDice, handleSlots } = require('./activities');
+const { handleMazeStart, handleNavigate, handleServerHackStart, listJobs, acceptJob, handleDownload } = require('./missions');
 
-// --- SYSTEM COMMANDS ---
 async function handleSystem(user, command, args, socket, Player, io) {
     let p = await Player.findOne({ username: user });
     
+    // --- 1. SHELL INTERCEPT (For Active Hacking Sessions) ---
+    // If handleShell returns true, it consumed the command (ls, cd, cat in remote system)
+    const handledByShell = await handleShell(user, command, args, socket, Player);
+    if (handledByShell) return;
+
+    // --- 2. STANDARD COMMANDS ---
     switch (command) {
+        // --- SYSTEM UTILITIES ---
         case 'theme':
             const t = args[0];
-            if (['green','amber','plasma','matrix'].includes(t)) {
+            if (['green','amber','plasma','matrix','red'].includes(t)) {
+                // Check for Premium Themes
                 if (t !== 'green' && !p.inventory.includes(`theme_${t}`)) {
-                    return socket.emit('message', { text: 'Theme locked.', type: 'error' });
+                    return socket.emit('message', { text: `Theme '${t}' is locked. Buy access in shop.`, type: 'error' });
                 }
-                p.theme = t; await p.save();
+                p.theme = t; 
+                await p.save();
                 socket.emit('player_data', p);
-                socket.emit('message', { text: `Theme set: ${t}`, type: 'success' });
-            } else socket.emit('message', { text: 'Invalid theme.', type: 'error' });
+                socket.emit('message', { text: `Visual Interface Updated: ${t.toUpperCase()}`, type: 'success' });
+            } else {
+                socket.emit('message', { text: 'Invalid theme. Available: green, amber, plasma, matrix, red', type: 'error' });
+            }
             break;
-
+        
         case 'chat':
             const msg = args.join(' ');
             if (msg) io.emit('message', { text: `[CHAT] ${user}: ${msg}`, type: 'info' });
+            else socket.emit('message', { text: 'Usage: chat [message]', type: 'error' });
             break;
-
+            
         case 'files':
-            socket.emit('message', { text: `\n/ROOT:\n${p.files.join('\n')}`, type: 'info' });
+            socket.emit('message', { text: `\n/ROOT (${p.files.length} files):\n${p.files.join('\n')}`, type: 'info' });
             break;
 
         case 'read':
             const f = args[0];
+            // Define Lore locally or import constants if needed
             const LORE = {
-                'readme.txt': "Welcome to Oddztek OS. Authorized personnel only.",
-                'server_log.txt': "CRITICAL FAILURE: Core systems offline.",
-                'admin_pass.txt': "Hint: The password is hidden in the deep net."
+                'readme.txt': "Welcome to Oddztek OS. This system is monitored. Unauthorized access is prohibited.",
+                'server_log.txt': "FATAL ERROR 10-12-99: Core temperature critical. Automatic shutdown failed.",
+                'user_data.txt': "User List: Admin, Guest, System...",
+                'wallet.dat': "Encrypted Wallet File. (Decrypted: +500 ODZ)",
+                'sys_core.log': "System Core Dump: Root Access trace found."
             };
-            if (p.files.includes(f) && LORE[f]) socket.emit('message', { text: `\n> ${f}\n${LORE[f]}`, type: 'system' });
-            else socket.emit('message', { text: 'File corrupted/missing.', type: 'error' });
+            
+            if (p.files.includes(f)) {
+                const content = LORE[f] || "[FILE ENCRYPTED OR CORRUPTED]";
+                socket.emit('message', { text: `\n> ${f}\n${content}`, type: 'system' });
+            } else {
+                socket.emit('message', { text: 'File not found in local storage.', type: 'error' });
+            }
             break;
 
         case 'inventory':
         case 'inv':
-            socket.emit('message', { text: `INVENTORY: ${p.inventory.join(', ') || 'Empty'}`, type: 'info' });
+            socket.emit('message', { text: `INSTALLED MODULES: ${p.inventory.join(', ') || 'None'}`, type: 'info' });
             break;
-
-        case 'mail':
-            const action = args[0];
-            if (action === 'check') {
-                if (!p.inbox.length) socket.emit('message', { text: 'Inbox Empty.', type: 'info' });
-                else socket.emit('message', { text: `\n=== INBOX ===\n${p.inbox.map((m,i)=>`[${i+1}] ${m.read?'(R)':'(N)'} ${m.from}: "${m.msg}"`).join('\n')}`, type: 'info' });
-            } else if (action === 'send') {
-                const t = await Player.findOne({ username: args[1] });
-                if (!t) return socket.emit('message', { text: 'User not found.', type: 'error' });
-                t.inbox.push({ from: user, msg: args.slice(2).join(' '), read: false });
-                await t.save();
-                socket.emit('message', { text: 'Sent.', type: 'success' });
-            } else if (action === 'read') {
-                const idx = parseInt(args[1]) - 1;
-                if(p.inbox[idx]) { p.inbox[idx].read = true; await p.save(); socket.emit('message', { text: 'Marked read.', type: 'success' }); }
-            }
+        
+        case 'status':
+        case 'whoami':
+            socket.emit('player_data', p);
+            socket.emit('message', { 
+                text: `USER: ${p.username}\nLEVEL: ${p.level}\nBALANCE: ${p.balance} ODZ\nCPU: v${p.hardware.cpu}.0 | GPU: v${p.hardware.gpu}.0 | RAM: ${p.hardware.ram}GB`, 
+                type: 'success' 
+            });
             break;
 
         case 'leaderboard':
             const all = await Player.find();
             const visible = all.filter(pl => !pl.inventory.includes('cloak_v1'));
             const top = visible.sort((a, b) => b.balance - a.balance).slice(0, 5);
-            socket.emit('message', { text: `\n=== TOP HACKERS ===\n${top.map((pl,i)=>`#${i+1} ${pl.username} | ${pl.balance}`).join('\n')}`, type: 'info' });
+            socket.emit('message', { text: `\n=== TOP HACKERS ===\n${top.map((pl,i)=>`#${i+1} ${pl.username} | ${pl.balance} ODZ`).join('\n')}`, type: 'info' });
             break;
 
-        // --- DELEGATE TO MODULES ---
-        
-        // Economy
+        case 'mail':
+            const action = args[0];
+            if (action === 'check') {
+                if (!p.inbox.length) socket.emit('message', { text: 'Inbox Empty.', type: 'info' });
+                else socket.emit('message', { text: `\n=== SECURE INBOX ===\n${p.inbox.map((m,i)=>`[${i+1}] ${m.read?'(Read)':'(NEW)'} FROM: ${m.from}\n    "${m.msg}"`).join('\n')}`, type: 'info' });
+            } 
+            else if (action === 'send') {
+                const t = await Player.findOne({ username: args[1] });
+                if (!t) return socket.emit('message', { text: 'User not found.', type: 'error' });
+                const messageBody = args.slice(2).join(' ');
+                if (!messageBody) return socket.emit('message', { text: 'Message empty.', type: 'error' });
+                
+                t.inbox.push({ from: user, msg: messageBody, read: false, date: new Date() });
+                await t.save();
+                socket.emit('message', { text: 'Transmission Sent.', type: 'success' });
+            } 
+            else if (action === 'read') {
+                const idx = parseInt(args[1]) - 1;
+                if(p.inbox[idx]) { 
+                    p.inbox[idx].read = true; 
+                    await p.save(); 
+                    socket.emit('message', { text: 'Message marked as read.', type: 'success' }); 
+                } else {
+                    socket.emit('message', { text: 'Invalid Message ID.', type: 'error' });
+                }
+            }
+            else {
+                socket.emit('message', { text: 'Usage: mail check | mail send [user] [msg] | mail read [id]', type: 'error' });
+            }
+            break;
+
+        case 'invite':
+            socket.emit('message', { text: `REFERRAL CODE: ${p.inviteCode}\n(Bonus: +100 ODZ for new user, +200 ODZ for you)`, type: 'special' });
+            break;
+
+        // --- ECONOMY MODULES ---
         case 'mine': await handleMine(user, socket, Player); break;
         case 'shop': handleShop(socket); break;
         case 'buy': await handleBuy(user, args, socket, Player); break;
         case 'daily': await handleDaily(user, socket, Player); break;
         case 'transfer': await handleTransfer(user, args, socket, Player); break;
 
-        // Activities (Gambling)
+        // --- ACTIVITY MODULES ---
         case 'flip':
         case 'coinflip': await handleCoinflip(user, args, Player, socket); break;
         case 'dice': await handleDice(user, args, Player, socket); break;
         case 'slots': await handleSlots(user, args, Player, socket); break;
 
-        // Hacking
+        // --- HACKING MODULES (NEW SYSTEM) ---
         case 'scan': await handleScan(user, args, socket, Player); break;
-        case 'hack': await handleHackInit(user, args, socket, Player); break;
-        case 'guess': await handleGuess(user, args, socket, Player); break;
-        case 'brute': await handleBrute(user, args, socket, Player); break;
+        case 'exploit': await handleExploit(user, args, socket, Player); break;
+        
+        // 'privesc' is handled inside handleShell via alias, but we keep this case just in case
+        // the user calls it outside a session (where it should fail)
+        case 'privesc': 
+            socket.emit('message', { text: 'No active shell session. Exploit a target first.', type: 'error' }); 
+            break;
 
-        // Missions
-        case 'maze': handleMazeStart(user, socket); break;
+        // --- MISSION MODULES ---
+        case 'jobs': listJobs(user, socket, Player); break;
+        case 'accept': await acceptJob(user, args, socket, Player); break;
+        
+        // Legacy Mission Commands (Can be removed or kept for specific mission types)
         case 'server_hack': await handleServerHackStart(user, socket, Player); break;
         case 'nav':
         case 'move': await handleNavigate(user, args, socket, Player); break;
-
-        // Puzzles (Simplified logic here for now)
-        case 'decrypt':
-             // Check mission state inside decrypt
-             if (p.missionProgress && p.missionProgress.stage === 1.5) {
-                 socket.puzzleAnswer = "MAINFRAME";
-                 socket.emit('message', { text: `[FIREWALL LOCK] Unscramble: "NARFIMAEM"\nType: solve [answer]`, type: 'special' });
-             } else {
-                 socket.puzzleAnswer = "CIPHER";
-                 socket.emit('message', { text: `[PUZZLE] Unscramble: "EHCRIP"\nType: solve [answer]`, type: 'warning' });
-             }
-             break;
-        case 'solve':
-             if(socket.puzzleAnswer && args[0].toUpperCase() === socket.puzzleAnswer) {
-                 if(p.missionProgress && p.missionProgress.stage === 1.5) {
-                     p.missionProgress.stage = 2; await p.save();
-                     socket.emit('message', { text: "ACCESS GRANTED. Entering Mainframe...", type: 'success' });
-                 } else {
-                     p.balance += 25; await p.save();
-                     socket.emit('message', { text: "Correct. +25 ODZ", type: 'success' });
-                 }
-                 socket.puzzleAnswer = null;
-             } else socket.emit('message', { text: "Incorrect.", type: 'error' });
-             break;
+        case 'download': await handleDownload(user, socket, Player); break;
 
         default:
-            socket.emit('message', { text: `Unknown command: ${command}`, type: 'error' });
+            socket.emit('message', { text: `Unknown command: '${command}'. Type 'help'.`, type: 'error' });
     }
 }
 
