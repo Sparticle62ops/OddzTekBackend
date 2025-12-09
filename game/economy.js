@@ -8,7 +8,7 @@ function getMiningYield(player) {
     let base = Math.floor(Math.random() * 5) + 5;
     let multiplier = player.hardware.cpu || 1;
     
-    // Server Rack Bonus (Passive, but added to active mining for impact)
+    // Server Rack Bonus (Passive boost to active mining)
     if (player.hardware.servers > 0) {
         multiplier += (player.hardware.servers * 0.5); 
     }
@@ -25,7 +25,8 @@ async function handleMine(user, socket, Player) {
     // Cooldown Logic (Reduced by Network Level)
     const now = Date.now();
     const baseCd = 20000;
-    const reduction = (p.hardware.networkLevel || 1 - 1) * 2000; // 2s reduction per level
+    // Network Level reduces cooldown by 2s per level
+    const reduction = ((p.hardware.networkLevel || 1) - 1) * 2000; 
     const actualCd = Math.max(5000, baseCd - reduction);
     
     if (now - p.lastMine < actualCd) {
@@ -61,7 +62,8 @@ async function handleMine(user, socket, Player) {
             p.lastMine = Date.now();
             
             if (p.xp >= p.level * LEVEL_XP_REQ) {
-                p.level++; p.xp = 0;
+                p.level++;
+                p.xp = 0;
                 socket.emit('message', { text: `*** SYSTEM UPGRADE: LEVEL ${p.level} ***`, type: 'special' });
                 socket.emit('play_sound', 'success');
             }
@@ -76,7 +78,6 @@ async function handleMine(user, socket, Player) {
 // --- SHOP ---
 function handleShop(socket) {
     let msg = "\n=== BLACK MARKET ===\n";
-    // Group items by type for cleaner display
     const groups = { 'Hardware': [], 'Software': [], 'Security': [], 'Cosmetic': [] };
     
     for (const [id, item] of Object.entries(SHOP_ITEMS)) {
