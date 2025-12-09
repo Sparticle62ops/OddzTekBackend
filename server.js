@@ -6,7 +6,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 
 // --- IMPORTS ---
-// We will create/update these next
+// We will update commands.js next to link everything
 const { handleSystem } = require('./game/commands');
 
 // --- CONFIG ---
@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 // --- SERVER SETUP ---
 const app = express();
 app.use(cors());
-app.get('/', (req, res) => res.send('Oddztek v13.0 [Enterprise] Backend Online'));
+app.get('/', (req, res) => res.send('Oddztek v14.0 [Dashboard] Backend Online'));
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -27,7 +27,7 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('>> MongoDB Connected'))
   .catch(err => console.error('>> DB Error:', err));
 
-// --- PLAYER SCHEMA (v13.0 Expanded) ---
+// --- PLAYER SCHEMA (v14.0) ---
 const playerSchema = new mongoose.Schema({
   username: { type: String, unique: true, required: true },
   password: { type: String, required: true },
@@ -37,11 +37,11 @@ const playerSchema = new mongoose.Schema({
   level: { type: Number, default: 1 },
   theme: { type: String, default: 'green' },
   
-  // --- NEW HARDWARE SYSTEM ---
+  // Hardware
   hardware: {
     cpu: { type: Number, default: 1 },     // Mining Multiplier
-    gpu: { type: Number, default: 0 },     // Hacking Speed / Hashrate (0 = None)
-    ram: { type: Number, default: 8 },     // Exploit Capacity (8GB Default)
+    gpu: { type: Number, default: 0 },     // Hacking Speed / Hashrate
+    ram: { type: Number, default: 8 },     // Exploit Capacity
     storage: { type: Number, default: 10 },// File Limit
     servers: { type: Number, default: 0 }  // Passive Income Units
   },
@@ -52,7 +52,7 @@ const playerSchema = new mongoose.Schema({
     honeypot: { type: Boolean, default: false }
   },
   
-  // Inventory (Items/Software)
+  // Inventory & State
   inventory: { type: [String], default: [] }, 
   
   // Social
@@ -64,10 +64,11 @@ const playerSchema = new mongoose.Schema({
   lastMine: { type: Number, default: 0 },
   lastHack: { type: Number, default: 0 },
   lastDaily: { type: Number, default: 0 },
+  lastCollection: { type: Number, default: 0 }, // NEW: For server rack income
   
   // File System & Mission State
   files: { type: [String], default: ['readme.txt'] },
-  mission: { type: Object, default: {} } // Stores active hack session info
+  missionProgress: { type: Object, default: {} } // Renamed from 'mission' for consistency with previous files
 });
 
 const Player = mongoose.model('Player', playerSchema);
@@ -76,7 +77,7 @@ const Player = mongoose.model('Player', playerSchema);
 io.on('connection', (socket) => {
   let user = null;
 
-  // 1. AUTHENTICATION (Standard)
+  // 1. AUTHENTICATION
   socket.on('auth_token', async (token) => {
     try {
       const p = await Player.findOne({ token });
