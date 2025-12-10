@@ -3,12 +3,11 @@ const { PORTS, HACK_COOLDOWN, LOOT } = require('./constants');
 
 // Session Store
 const SESSIONS = {}; 
-// PvP Active Hacks Store
+// PvP Active Hacks Store (Legacy/Direct)
 const ACTIVE_HACKS = {};
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- HELPERS ---
 function generateFiles(diff, isPlayer) {
     const files = {};
     if (Math.random() > 0.5) files['user_data.txt'] = "Regular User Data";
@@ -96,150 +95,47 @@ async function handleScan(user, args, socket, Player) {
     await delay(2000);
 
     const sys = generateSystem(diff, isPlayer);
-    
-    // Create PvE Session
     SESSIONS[user] = { target: target, sys: sys, stage: 'recon', accessLevel: 'none', isTargetPlayer: isPlayer };
 
     let msg = `\nSCAN COMPLETE: ${sys.ip} (${sys.os})\nPORTS:\n`;
     sys.ports.forEach(p => msg += `[${p.port}] ${p.service} (Vuln: ${p.type})\n`);
-    
-    if (isPlayer) msg += `\n>> TARGET IS A PLAYER. Use 'hack ${target}' to breach directly (PvP).\n>> OR use 'exploit [port]' for stealthy file access.`;
-    else msg += `\nType 'exploit [port]' to attach.`;
+    msg += `\nType 'exploit [port]' to attach.`;
 
     socket.emit('message', { text: msg, type: 'success' });
 }
 
 // ========================================================
-// 2. PvP HACKING (Direct Attack)
-// ========================================================
-async function handleHackInit(user, args, socket, Player) {
-    const targetName = args[0];
-    if (!targetName || targetName === user) return socket.emit('message', { text: 'Invalid Target.', type: 'error' });
-
-    const target = await Player.findOne({ username: targetName });
-    if (!target) return socket.emit('message', { text: 'User not found. Use "netscan".', type: 'error' });
-
-    let p = await Player.findOne({ username: user });
-    if (Date.now() - p.lastHack < HACK_COOLDOWN) {
-        const wait = Math.ceil((HACK_COOLDOWN - (Date.now() - p.lastHack))/1000);
-        return socket.emit('message', { text: `Hack Cooldown: ${wait}s remaining.`, type: 'warning' });
-    }
-
-    if (target.activeHoneypot) {
-        socket.emit('message', { text: "Handshake...", type: 'loading' });
-        await delay(1000);
-        const fine = Math.floor(p.balance * 0.3);
-        p.balance -= fine; target.activeHoneypot = false; target.balance += fine * 0.5;
-        await p.save(); await target.save();
-        socket.emit('player_data', p);
-        socket.emit('message', { text: `⚠️ TRAP TRIGGERED! Lost ${fine} ODZ.`, type: 'error' });
-        socket.emit('play_sound', 'error');
-        return;
-    }
-
-    const pin = generatePin(target.security.firewall);
-    let known = Array(pin.length).fill('*');
-    let extra = "";
-    
-    if (p.inventory.includes('decryptor_v1')) {
-        const idx = Math.floor(Math.random() * pin.length);
-        known[idx] = pin[idx];
-        extra = `\n[TOOL] Decryptor revealed digit ${idx+1}`;
-    }
-
-    ACTIVE_HACKS[user] = { 
-        target: targetName, pin: pin, attempts: 5, known: known, expires: Date.now() + 45000 
-    };
-
-    socket.emit('message', { 
-        text: `BREACH STARTED: ${targetName}\nSecurity: Level ${target.security.firewall}\nPIN: [ ${known.join(' ')} ]${extra}\n\nType 'guess [number]' to crack code.`, 
-        type: 'special' 
-    });
-    socket.emit('play_sound', 'login');
-}
-
-async function handleGuess(user, args, socket, Player) {
-    const session = ACTIVE_HACKS[user];
-    if (!session) return socket.emit('message', { text: 'No active PIN breach.', type: 'error' });
-    if (Date.now() > session.expires) { delete ACTIVE_HACKS[user]; return socket.emit('message', { text: 'Timed Out.', type: 'error' }); }
-    
-    const val = args[0];
-    if (!val || val.length !== session.pin.length) {
-        return socket.emit('message', { text: `Invalid Input. Length must be ${session.pin.length}.`, type: 'error' });
-    }
-
-    if (val === session.pin) {
-        // WIN PvP
-        delete ACTIVE_HACKS[user];
-        const t = await Player.findOne({ username: session.target });
-        const p = await Player.findOne({ username: user });
-        
-        const stolen = Math.floor(t.balance * 0.25);
-        t.balance = Math.max(0, t.balance - stolen);
-        p.balance += stolen;
-        
-        t.inbox.push({ from: 'SYSTEM', msg: `ALERT: ${user} breached your firewall! Lost ${stolen} ODZ.` });
-        
-        await t.save(); await p.save();
-        socket.emit('player_data', p);
-        socket.emit('message', { text: `ACCESS GRANTED.\nTransferred: +${stolen} ODZ`, type: 'success' });
-        socket.emit('play_sound', 'coin');
-    } else {
-        // FAIL Logic
-        session.attempts--;
-        if (session.attempts <= 0) {
-            delete ACTIVE_HACKS[user];
-            socket.emit('message', { text: 'LOCKOUT.', type: 'error' });
-            return;
-        }
-
-        // --- DIGIT MATCH REVEAL LOGIC ---
-        let revealedNew = false;
-        for(let i=0; i<session.pin.length; i++) {
-            if (val[i] === session.pin[i] && session.known[i] === '*') {
-                session.known[i] = val[i]; // Lock digit
-                revealedNew = true;
-            }
-        }
-
-        // Hot/Cold
-        const diff = Math.abs(parseInt(val) - parseInt(session.pin));
-        const dir = val < session.pin ? "(Higher)" : "(Lower)";
-        let hint = diff < 20 ? "HOT" : (diff < 100 ? "WARM" : "COLD");
-
-        let msg = `Incorrect. Signal: ${hint} ${dir}.`;
-        if (revealedNew) msg += `\n[+] DIGIT LOCKED!`;
-        msg += `\nKNOWN PIN: [ ${session.known.join(' ')} ]`; // Explicitly show known state
-        msg += `\nTries: ${session.attempts}`;
-        
-        socket.emit('message', { text: msg, type: 'warning' });
-    }
-}
-
-// ========================================================
-// 3. EXPLOIT & SHELL (PvE / Detailed Hacking)
+// 2. EXPLOIT & SHELL (PvE / Detailed Hacking)
 // ========================================================
 async function handleExploit(user, args, socket, Player) {
     const session = SESSIONS[user];
-    if (!session) return socket.emit('message', { text: 'Scan target first.', type: 'error' });
+    if (!session) return socket.emit('message', { text: 'No active target. Scan first.', type: 'error' });
     
     const port = args[0];
     const targetPort = session.sys.ports.find(p => p.port == port);
-    if (!targetPort) return socket.emit('message', { text: `Port ${port} closed.`, type: 'error' });
+
+    if (!targetPort) return socket.emit('message', { text: `Port ${port} is closed.`, type: 'error' });
 
     let p = await Player.findOne({ username: user });
-    if (targetPort.diff > 2 && p.hardware.ram < 8) return socket.emit('message', { text: `Insufficient RAM.`, type: 'error' });
+    
+    if (targetPort.diff > 2 && p.hardware.ram < 8) {
+         return socket.emit('message', { text: `Insufficient RAM. Need upgrade for Port ${port}.`, type: 'error' });
+    }
 
-    socket.emit('message', { text: `Exploiting ${targetPort.type}...`, type: 'loading' });
+    socket.emit('message', { text: `Running ${targetPort.type}...`, type: 'loading' });
     await delay(2000);
 
-    const chance = 0.5 + (p.hardware.gpu * 0.1);
+    const baseChance = 0.5;
+    const gpuBonus = (p.hardware.gpu || 0) * 0.1; 
+    const chance = baseChance + gpuBonus;
+
+    // Small chance to fail
     if (Math.random() < chance) {
         session.stage = 'shell';
         session.accessLevel = 'user';
-        socket.emit('message', { text: `SHELL OPENED (User Level).\nType 'ls', 'cat', 'privesc'.`, type: 'success' });
+        socket.emit('message', { text: `ACCESS GRANTED.\nShell Connected (User Level).\nType 'ls', 'cat', or 'privesc'.`, type: 'success' });
     } else {
-        socket.emit('message', { text: 'Exploit Failed.', type: 'error' });
+        socket.emit('message', { text: 'Exploit Failed. Connection Reset.', type: 'error' });
         delete SESSIONS[user];
     }
 }
@@ -249,7 +145,8 @@ async function handleShell(user, cmd, args, socket, Player) {
     const session = SESSIONS[user];
     if (!session || session.stage !== 'shell') return false; 
 
-    // --- WALLET CRACK MINIGAME ---
+    // --- WALLET CRACK MINIGAME INTERCEPT ---
+    // This runs if the user is currently trying to crack a wallet
     if (session.walletChallenge) {
         if (cmd === 'unlock' || cmd === 'guess') {
             const guessStr = args[0];
@@ -265,26 +162,29 @@ async function handleShell(user, cmd, args, socket, Player) {
                 await payoutLoot(user, socket, Player, session);
                 session.walletChallenge = null;
             } else {
-                // FAIL
+                // FAIL HINTS
                 session.walletChallenge.tries--;
                 if (session.walletChallenge.tries <= 0) {
                     socket.emit('message', { text: "ENCRYPTION SEALED. File destroyed.", type: 'error' });
-                    delete SESSIONS[user];
+                    delete SESSIONS[user]; // Kick player
                     return true;
                 }
 
                 // --- LOGIC: DIGIT REVEAL FOR WALLET ---
                 let revealed = false;
-                for (let i = 0; i < targetPinStr.length; i++) {
-                    // Check bounds and match
-                    if (guessStr[i] && guessStr[i] === targetPinStr[i] && session.walletChallenge.known[i] === '*') {
-                        session.walletChallenge.known[i] = targetPinStr[i];
+                // Pad pin specific to this challenge level (usually 3 digits: 100-999)
+                const pinStr = session.walletChallenge.pin.toString();
+                const guessS = guess.toString().padStart(3, '0');
+
+                for (let i = 0; i < 3; i++) {
+                    if (guessS[i] && guessS[i] === pinStr[i] && session.walletChallenge.known[i] === '*') {
+                        session.walletChallenge.known[i] = pinStr[i];
                         revealed = true;
                     }
                 }
 
                 const dir = guess < session.walletChallenge.pin ? "(Higher)" : "(Lower)";
-                let msg = `INVALID KEY. Hint: ${dir}`;
+                let msg = `INVALID KEY. Signal: ${dir}`;
                 if (revealed) msg += `\n[+] DIGIT MATCHED!`;
                 msg += `\nCURRENT KEY STATE: [ ${session.walletChallenge.known.join(' ')} ]`;
                 msg += `\nAttempts: ${session.walletChallenge.tries}`;
@@ -298,26 +198,27 @@ async function handleShell(user, cmd, args, socket, Player) {
             return true;
         } else {
             socket.emit('message', { text: `[SECURE INPUT] Type 'unlock [number]' to proceed.`, type: 'warning' });
-            return true;
+            return true; // Block other commands
         }
     }
 
-    // --- STANDARD SHELL ---
+    // --- STANDARD SHELL COMMANDS ---
     if (cmd === 'ls') {
-        socket.emit('message', { text: Object.keys(session.sys.files).join('\n'), type: 'info' });
+        const files = Object.keys(session.sys.files);
+        socket.emit('message', { text: files.length ? files.join('\n') : 'No readable files.', type: 'info' });
         return true;
     }
 
     if (cmd === 'privesc') {
         let p = await Player.findOne({ username: user });
-        if (p.hardware.gpu < 1) { socket.emit('message', { text: 'GPU Required.', type: 'error' }); return true; }
+        if (p.hardware.gpu < 1) { socket.emit('message', { text: 'GPU Required used for brute-force escalation.', type: 'error' }); return true; }
         
         socket.emit('message', { text: 'Escalating...', type: 'loading' });
         await delay(2000);
         if (Math.random() > 0.4) {
             session.accessLevel = 'root';
             socket.emit('message', { text: '# ROOT ACCESS GRANTED #', type: 'special' });
-        } else socket.emit('message', { text: 'Failed.', type: 'error' });
+        } else socket.emit('message', { text: 'Escalation Failed.', type: 'error' });
         return true;
     }
 
@@ -325,8 +226,10 @@ async function handleShell(user, cmd, args, socket, Player) {
         const file = args[0];
         if (!session.sys.files[file]) { socket.emit('message', { text: 'File not found.', type: 'error' }); return true; }
 
+        // --- WALLET TRIGGER ---
         if (file === 'wallet.dat') {
-            if (session.accessLevel !== 'root') { socket.emit('message', { text: 'Access Denied. Need Root.', type: 'error' }); return true; }
+            // REMOVED 'Root' check requirement to make it accessible via minigame
+            // Or keep it? Let's make it so you can try to crack it immediately!
             
             // INIT WALLET CHALLENGE
             const pin = Math.floor(Math.random() * 900) + 100; // 3 digits
@@ -342,17 +245,24 @@ async function handleShell(user, cmd, args, socket, Player) {
 
         socket.emit('message', { text: `Downloading ${file}...`, type: 'loading' });
         await delay(1000);
-        // ... (Basic file save logic)
-        socket.emit('message', { text: 'File saved.', type: 'success' });
+        
+        let p = await Player.findOne({ username: user });
+        if (!p.files.includes(file)) p.files.push(file); 
+        await p.save();
+        socket.emit('message', { text: `File saved to local storage.`, type: 'success' });
         return true;
     }
 
-    if (cmd === 'exit') { delete SESSIONS[user]; socket.emit('message', { text: 'Disconnected.', type: 'info' }); return true; }
+    if (cmd === 'exit') {
+        delete SESSIONS[user];
+        socket.emit('message', { text: 'Disconnected.', type: 'info' });
+        return true;
+    }
 
     return false;
 }
 
-// --- PAYOUT HELPER ---
+// --- PAYOUT HELPER (REAL PVP STEALING) ---
 async function payoutLoot(user, socket, Player, session) {
     let p = await Player.findOne({ username: user });
     let stolen = 0;
@@ -360,10 +270,14 @@ async function payoutLoot(user, socket, Player, session) {
     if (session.isTargetPlayer && session.target) {
         const t = await Player.findOne({ username: session.target });
         if (t) {
-            stolen = Math.floor(t.balance * 0.2);
-            t.balance -= stolen;
-            t.inbox.push({ from: 'SYSTEM', msg: `ALERT: Wallet cracked by ${user}. -${stolen} ODZ` });
-            await t.save();
+            // Steal percentage
+            const percent = 0.25; 
+            stolen = Math.floor(t.balance * percent);
+            if (stolen > 0) {
+                t.balance -= stolen;
+                t.inbox.push({ from: 'SYSTEM', msg: `ALERT: Wallet cracked by ${user}. Lost ${stolen} ODZ` });
+                await t.save();
+            }
         }
     } else {
         stolen = Math.floor(Math.random() * 800) + 400;
@@ -377,4 +291,13 @@ async function payoutLoot(user, socket, Player, session) {
     delete SESSIONS[user];
 }
 
-module.exports = { handleNetScan, handleScan, handleExploit, handleShell, handleHackInit, handleGuess };
+// Keep the PvP direct methods just in case `hack` is called directly, 
+// though we encourage scan/exploit/shell/crack flow.
+async function handleHackInit(user, args, socket, Player) {
+    socket.emit('message', { text: "Legacy Protocol. Use 'scan [target]' -> 'exploit 80' -> 'cat wallet.dat' to crack.", type: 'info' });
+}
+// Placeholder to satisfy exports
+async function handleGuess() {}; 
+async function handleBrute() {};
+
+module.exports = { handleNetScan, handleScan, handleExploit, handleShell, handleHackInit, handleGuess, handleBrute };
