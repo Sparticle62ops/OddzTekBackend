@@ -6,7 +6,6 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 
 // --- IMPORTS ---
-// We will update commands.js next to link everything
 const { handleSystem } = require('./game/commands');
 
 // --- CONFIG ---
@@ -15,7 +14,7 @@ const PORT = process.env.PORT || 3000;
 // --- SERVER SETUP ---
 const app = express();
 app.use(cors());
-app.get('/', (req, res) => res.send('Oddztek v14.0 [Dashboard] Backend Online'));
+app.get('/', (req, res) => res.send('Oddztek v16.0 [Black Market] Backend Online'));
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -27,23 +26,28 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('>> MongoDB Connected'))
   .catch(err => console.error('>> DB Error:', err));
 
-// --- PLAYER SCHEMA (v14.0) ---
+// --- PLAYER SCHEMA (v16.0) ---
 const playerSchema = new mongoose.Schema({
   username: { type: String, unique: true, required: true },
   password: { type: String, required: true },
-  token: { type: String },
+  token: { type: String }, 
+  
+  // Economy
   balance: { type: Number, default: 100 },
+  bounty: { type: Number, default: 0 }, // Price on their head
+  reputation: { type: Number, default: 0 }, // DedSec Cred
+  
+  // Progression
   xp: { type: Number, default: 0 },
   level: { type: Number, default: 1 },
   theme: { type: String, default: 'green' },
   
-  // Hardware
+  // Hardware Stats
   hardware: {
-    cpu: { type: Number, default: 1 },     // Mining Multiplier
-    gpu: { type: Number, default: 0 },     // Hacking Speed / Hashrate
-    ram: { type: Number, default: 8 },     // Exploit Capacity
-    storage: { type: Number, default: 10 },// File Limit
-    servers: { type: Number, default: 0 }  // Passive Income Units
+    cpu: { type: Number, default: 1 },     
+    gpu: { type: Number, default: 0 },     
+    ram: { type: Number, default: 8 },     
+    servers: { type: Number, default: 0 }  
   },
   
   // Security
@@ -52,8 +56,18 @@ const playerSchema = new mongoose.Schema({
     honeypot: { type: Boolean, default: false }
   },
   
-  // Inventory & State
-  inventory: { type: [String], default: [] }, 
+  // Items & Custom Software
+  inventory: { type: [String], default: [] }, // Items like 'server_rack'
+  software: { 
+    type: [{ 
+        name: String, 
+        level: Number, 
+        power: Number,   // Bonus to success chance
+        stealth: Number, // Bonus to avoiding logs/honeypots
+        type: String     // 'brute', 'trojan', 'worm'
+    }], 
+    default: [] 
+  },
   
   // Social
   inviteCode: { type: String, default: () => Math.random().toString(36).substring(7) },
@@ -64,11 +78,11 @@ const playerSchema = new mongoose.Schema({
   lastMine: { type: Number, default: 0 },
   lastHack: { type: Number, default: 0 },
   lastDaily: { type: Number, default: 0 },
-  lastCollection: { type: Number, default: 0 }, // NEW: For server rack income
+  lastCollection: { type: Number, default: 0 },
   
-  // File System & Mission State
+  // File System & Missions
   files: { type: [String], default: ['readme.txt'] },
-  missionProgress: { type: Object, default: {} } // Renamed from 'mission' for consistency with previous files
+  missionProgress: { type: Object, default: {} }
 });
 
 const Player = mongoose.model('Player', playerSchema);
@@ -77,7 +91,7 @@ const Player = mongoose.model('Player', playerSchema);
 io.on('connection', (socket) => {
   let user = null;
 
-  // 1. AUTHENTICATION
+  // 1. AUTH
   socket.on('auth_token', async (token) => {
     try {
       const p = await Player.findOne({ token });
@@ -88,14 +102,14 @@ io.on('connection', (socket) => {
         const unread = p.inbox.filter(m => !m.read).length;
         if(unread > 0) socket.emit('message', { text: `[!] ${unread} Unread Messages`, type: 'special' });
         socket.emit('play_sound', 'login');
-      } else socket.emit('message', { text: 'Session Expired. Login required.', type: 'error' });
+      } else socket.emit('message', { text: 'Session Expired.', type: 'error' });
     } catch (e) { console.error(e); }
   });
 
-  // 2. UNIFIED COMMAND HANDLER
+  // 2. COMMAND ROUTING
   socket.on('cmd', async ({ command, args }) => {
     try {
-      // -- AUTH COMMANDS --
+      // -- AUTH --
       if (command === 'login') {
           const [u, p_pass] = args;
           if (!u || !p_pass) return socket.emit('message', { text: 'Usage: login [user] [pass]', type: 'error' });
@@ -128,13 +142,11 @@ io.on('connection', (socket) => {
           return;
       }
       
-      // -- LOGGED IN COMMANDS --
       if (!user) {
           socket.emit('message', { text: 'Login Required.', type: 'error' });
           return;
       }
       
-      // Delegate to Module
       await handleSystem(user, command, args, socket, Player, io);
 
     } catch (e) {
@@ -143,7 +155,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('disconnect', () => { /* Cleanup if needed */ });
+  socket.on('disconnect', () => { });
 });
 
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
