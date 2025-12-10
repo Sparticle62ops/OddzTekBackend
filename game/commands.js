@@ -35,6 +35,11 @@ const {
     handleDefenseAction 
 } = require('./missions');
 
+const { 
+    handleBounty, 
+    handleVirus 
+} = require('./blackmarket');
+
 /**
  * Main Command Router
  * Receives every command sent from the frontend and decides what to do with it.
