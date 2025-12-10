@@ -1,22 +1,19 @@
 // game/missions.js
 
-const TARGETS = ['CyberDyne', 'Global_Dynamics', 'Massive_Dynamic', 'Umbrella_Corp', 'Aperture_Science', 'Yoyodyne', 'Tyrell_Corp'];
-const DATA_TYPES = ['Financial_Records', 'Prototype_Blueprints', 'Employee_Database', 'Blackmail_Material', 'Encryption_Keys', 'AI_Algorithms'];
-const LOCATIONS = ['Backup_Server', 'Mainframe', 'Cloud_Storage', 'CEO_Laptop', 'Satellite_Uplink'];
-const WANTED_NAMES = ['Ghost', 'Phantom', 'Zero_Cool', 'Neo', 'Morpheus', 'Trinity'];
+const TARGETS = ['CyberDyne', 'Global_Dynamics', 'Massive_Dynamic', 'Umbrella_Corp', 'Aperture_Science'];
+const DATA_TYPES = ['Financial_Records', 'Prototype_Blueprints', 'Employee_Database', 'Blackmail_Material'];
+const WANTED_NAMES = ['Ghost', 'Phantom', 'Zero_Cool', 'Neo', 'Morpheus'];
 
 // In-Memory Store for Offers: { user: [job1, job2, job3] }
 const MISSION_OFFERS = {}; 
 
 function generateJob(level) {
     const types = ['Heist', 'Hunt', 'Defense'];
-    // Weighted random selection
     const roll = Math.random();
     let type = 'Heist';
     if (roll > 0.5) type = 'Defense';
     if (roll > 0.8) type = 'Hunt';
 
-    // Difficulty scales with player level
     const baseDiff = Math.ceil(level / 2); 
     const diff = Math.min(5, Math.max(1, baseDiff + Math.floor(Math.random() * 3) - 1));
     const reward = diff * 400 + Math.floor(Math.random() * 300);
@@ -30,15 +27,14 @@ function generateJob(level) {
 
     if (type === 'Heist') {
         const target = TARGETS[Math.floor(Math.random() * TARGETS.length)];
-        const data = DATA_TYPES[Math.floor(Math.random() * DATA_TYPES.length)];
         job.name = `Data Heist: ${target}`;
-        job.desc = `Infiltrate ${target} and extract ${data}.`;
+        job.desc = `Infiltrate ${target} and extract ${DATA_TYPES[Math.floor(Math.random() * DATA_TYPES.length)]}.`;
         job.targetName = target;
     } 
     else if (type === 'Hunt') {
         const target = WANTED_NAMES[Math.floor(Math.random()*WANTED_NAMES.length)];
         job.name = `Bounty Hunt: ${target}`;
-        job.desc = `Locate and hack user '${target}'. They are hiding in the network.`;
+        job.desc = `Locate and hack user '${target}'.`;
         job.targetName = target;
     }
     else if (type === 'Defense') {
@@ -50,11 +46,12 @@ function generateJob(level) {
     return job;
 }
 
+// --- COMMANDS ---
+
 async function listJobs(user, socket, Player) {
     let p = await Player.findOne({ username: user });
     if (!p) return;
 
-    // Generate 3 fresh jobs
     const jobs = [generateJob(p.level), generateJob(p.level), generateJob(p.level)];
     MISSION_OFFERS[user] = jobs;
 
@@ -74,10 +71,9 @@ async function acceptJob(user, args, socket, Player) {
     if (!offers || !offers[idx]) return socket.emit('message', { text: 'Invalid Job ID. Run "jobs" first.', type: 'error' });
     
     const job = offers[idx];
-    let p = await Player.findOne({ username: user });
     
-    // Set Active Mission
-    p.missionProgress = {
+    // Construct Mission Object
+    const newMission = {
         active: job.type.toLowerCase(),
         stage: 1, 
         jobId: job.id,
@@ -86,8 +82,13 @@ async function acceptJob(user, args, socket, Player) {
         reward: job.reward
     };
     
-    p.markModified('missionProgress'); // CRITICAL FIX: Ensures saving
-    await p.save();
+    // ATOMIC WRITE FIX: Forces DB update immediately
+    const p = await Player.findOneAndUpdate(
+        { username: user },
+        { $set: { missionProgress: newMission } },
+        { new: true }
+    );
+
     socket.emit('player_data', p);
     
     socket.emit('message', { text: `CONTRACT ACCEPTED: ${job.name}`, type: 'special' });
@@ -102,7 +103,7 @@ async function acceptJob(user, args, socket, Player) {
     }
 }
 
-// --- MISSION EXECUTION HANDLERS ---
+// --- MISSION LOGIC HANDLERS ---
 
 async function handleServerHackStart(user, socket, Player) {
     let p = await Player.findOne({ username: user });
@@ -162,11 +163,16 @@ async function handleDownload(user, socket, Player) {
     let p = await Player.findOne({ username: user });
     if (p.missionProgress && p.missionProgress.active === 'heist' && p.missionProgress.stage === 4) {
         const reward = p.missionProgress.reward;
-        p.balance += reward;
-        p.xp += p.missionProgress.difficulty * 50;
-        p.missionProgress = {}; // Clear mission
-        p.markModified('missionProgress');
-        await p.save();
+        
+        // Use atomic update
+        p = await Player.findOneAndUpdate(
+            { username: user },
+            { 
+                $inc: { balance: reward, xp: p.missionProgress.difficulty * 50 },
+                $set: { missionProgress: {} }
+            },
+            { new: true }
+        );
 
         socket.emit('message', { text: `DATA SECURED.\nContract Complete.\nPayment Transferred: +${reward} ODZ`, type: 'success' });
         socket.emit('player_data', p);
@@ -175,8 +181,6 @@ async function handleDownload(user, socket, Player) {
     }
     socket.emit('message', { text: 'No downloadable assets found.', type: 'error' });
 }
-
-// --- DEFENSE MISSION HANDLER ---
 
 async function handleDefenseAction(user, action, socket, Player) {
     let p = await Player.findOne({ username: user });
@@ -197,19 +201,29 @@ async function handleDefenseAction(user, action, socket, Player) {
         
         if (p.missionProgress.stage >= 3) {
              const reward = p.missionProgress.reward;
-             p.balance += reward;
-             p.xp += diff * 40;
-             p.missionProgress = {}; 
+             
+             // Atomic Finish
+             p = await Player.findOneAndUpdate(
+                { username: user },
+                { 
+                    $inc: { balance: reward, xp: diff * 40 },
+                    $set: { missionProgress: {} }
+                },
+                { new: true }
+             );
+             
              socket.emit('message', { text: `CONTRACT COMPLETE. System Integrity 100%.\nPayment: +${reward} ODZ`, type: 'special' });
              socket.emit('play_sound', 'success');
+             socket.emit('player_data', p);
+             return;
         } else {
              socket.emit('message', { text: `WARNING: Next wave incoming... Type 'block' or 'patch'.`, type: 'warning' });
         }
     } else {
-        // Fail
         socket.emit('message', { text: `[FAILURE] Firewall breached! Connection unstable. Try again!`, type: 'error' });
         socket.emit('play_sound', 'error');
     }
+    
     p.markModified('missionProgress');
     await p.save();
 }
