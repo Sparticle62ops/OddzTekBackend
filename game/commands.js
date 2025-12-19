@@ -1,4 +1,4 @@
-const { handleMine, handleShop, handleBuy, handleDaily, handleTransfer, handleCollect, handleBank } = require('./economy');
+const { handleMine, handleShop, handleBuy, handleDaily, handleWeekly, handleTransfer, handleCollect, handleBank } = require('./economy');
 const { handleCraft } = require('./crafting');
 const { handleAuction } = require('./auction');
 const { handleScan, handleExploit, handleShell, handleNetScan, handleBrute, handleProbe, handleInject, handleDisconnect } = require('./hacking'); 
