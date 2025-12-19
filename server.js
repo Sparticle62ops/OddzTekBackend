@@ -34,6 +34,7 @@ const playerSchema = new mongoose.Schema({
   
   // Economy
   balance: { type: Number, default: 100 },
+  bankBalance: { type: Number, default: 0 }, // Safe storage
   bounty: { type: Number, default: 0 }, // Price on their head
   reputation: { type: Number, default: 0 }, // DedSec Cred
   

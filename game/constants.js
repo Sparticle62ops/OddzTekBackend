@@ -31,7 +31,9 @@ module.exports = {
 
         // --- SOFTWARE / TOOLS ---
         'brute_force': { price: 300, type: 'software', func: 'brute', rarity: 'common', desc: 'Cracks FTP/SSH passwords.' },
+        'brute_force_v2': { price: 900, type: 'software', func: 'brute', rarity: 'rare', desc: 'Faster Cracking (High Success).' },
         'sql_map': { price: 600, type: 'software', func: 'sql', rarity: 'uncommon', desc: 'Injects SQL commands (Port 80).' },
+        'sql_map_v2': { price: 1500, type: 'software', func: 'sql', rarity: 'rare', desc: 'Advanced Injection (Bypasses Firewall).' },
         'zero_day': { price: 10000, type: 'consumable', rarity: 'legendary', desc: 'Guaranteed Root Access (1 use).' },
         
         // --- SECURITY ---

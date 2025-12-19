@@ -223,4 +223,52 @@ async function handleTransfer(user, args, socket, Player) {
     socket.emit('message', { text: `Transferred ${amount} ODZ to ${target}.`, type: 'success' });
 }
 
-module.exports = { handleMine, handleShop, handleBuy, handleDaily, handleTransfer, handleCollect };
+// --- BANK ---
+async function handleBank(user, args, socket, Player) {
+    const action = args[0] ? args[0].toLowerCase() : 'balance';
+    let p = await Player.findOne({ username: user });
+    
+    // Ensure bankBalance exists (migration)
+    if (p.bankBalance === undefined) p.bankBalance = 0;
+
+    if (action === 'balance' || action === 'bal') {
+        socket.emit('message', { 
+            text: `\n=== OFFSHORE BANK ===\nWALLET: ${p.balance} ODZ\nVAULT : ${p.bankBalance} ODZ\n`, 
+            type: 'info' 
+        });
+    }
+    else if (action === 'deposit' || action === 'dep') {
+        const amount = parseInt(args[1]);
+        if (isNaN(amount) || amount <= 0) return socket.emit('message', { text: 'Invalid amount.', type: 'error' });
+        
+        if (p.balance < amount) return socket.emit('message', { text: 'Insufficient wallet funds.', type: 'error' });
+        
+        const fee = Math.ceil(amount * 0.05); // 5% fee
+        const deposited = amount - fee;
+        
+        p.balance -= amount;
+        p.bankBalance += deposited;
+        
+        await p.save();
+        socket.emit('player_data', p);
+        socket.emit('message', { text: `Deposited ${deposited} ODZ (Fee: ${fee}).`, type: 'success' });
+    }
+    else if (action === 'withdraw' || action === 'with') {
+        const amount = parseInt(args[1]);
+        if (isNaN(amount) || amount <= 0) return socket.emit('message', { text: 'Invalid amount.', type: 'error' });
+        
+        if (p.bankBalance < amount) return socket.emit('message', { text: 'Insufficient bank funds.', type: 'error' });
+        
+        p.bankBalance -= amount;
+        p.balance += amount;
+        
+        await p.save();
+        socket.emit('player_data', p);
+        socket.emit('message', { text: `Withdrew ${amount} ODZ.`, type: 'success' });
+    }
+    else {
+        socket.emit('message', { text: 'Usage: bank [deposit/withdraw] [amount]', type: 'error' });
+    }
+}
+
+module.exports = { handleMine, handleShop, handleBuy, handleDaily, handleTransfer, handleCollect, handleBank };

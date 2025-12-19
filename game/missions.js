@@ -1,165 +1,174 @@
-/* src/App.css */
+const { SHOP_ITEMS } = require('./constants');
 
-@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;700&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=VT323&display=swap');
+const MISSIONS = [
+    { id: 'job_01', title: 'Data Extraction: Omega', diff: 1, reward: 500, type: 'heist', desc: 'Infiltrate Omega Server and download user logs.' },
+    { id: 'job_02', title: 'Sabotage: Rival Corp', diff: 2, reward: 1200, type: 'maze', desc: 'Navigate the firewall maze and plant a virus.' },
+    { id: 'job_03', title: 'The Bank Job', diff: 4, reward: 5000, type: 'heist', desc: 'High security bank heist. Expert hackers only.' }
+];
 
-/* --- RESET & BASE --- */
-* { box-sizing: border-box; }
+// Maze Layout (Simple 3x3 Grid for demo)
+// 0,0  0,1  0,2
+// 1,0  1,1  1,2
+// 2,0  2,1  2,2
+const MAZE_GRID = {
+    '0,0': { desc: 'Entry Node. Safe.', exits: ['south', 'east'] },
+    '0,1': { desc: 'Data Cache. Encrypted.', exits: ['west', 'east'] },
+    '0,2': { desc: 'Firewall Hub.', exits: ['west', 'south'] },
+    '1,0': { desc: 'Security Subsystem.', exits: ['north', 'south'] },
+    '1,1': { desc: 'CORE ROUTER.', exits: ['north', 'south', 'east', 'west'] },
+    '1,2': { desc: 'Trap Node.', exits: ['north'] },
+    '2,0': { desc: 'Maintenance Port.', exits: ['north', 'east'] },
+    '2,1': { desc: 'Admin Access Point.', exits: ['west', 'north'] }, // Target
+    '2,2': { desc: 'Dead End.', exits: [] }
+};
 
-body {
-  margin: 0;
-  padding: 0;
-  background-color: #000;
-  color: #eee;
-  font-family: 'Fira Code', monospace;
-  overflow: hidden;
+function listJobs(user, socket, Player) {
+    let msg = "\n=== THE BROKER'S CONTRACTS ===\n";
+    MISSIONS.forEach(m => {
+        msg += `[${m.id}] ${m.title} | Diff: ${m.diff} | Pay: ${m.reward} ODZ\n    > ${m.desc}\n`;
+    });
+    msg += "\nType 'accept [id]' to sign contract.";
+    socket.emit('message', { text: msg, type: 'info' });
 }
 
-#root { width: 100vw; height: 100vh; }
-
-.app-layout {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  background: radial-gradient(circle at center, #111, #000);
+async function acceptJob(user, args, socket, Player) {
+    const jobId = args[0];
+    const mission = MISSIONS.find(m => m.id === jobId);
+    
+    if (!mission) {
+        return socket.emit('message', { text: 'Job ID not found.', type: 'error' });
+    }
+    
+    let p = await Player.findOne({ username: user });
+    if (p.missionProgress && p.missionProgress.active) {
+        return socket.emit('message', { text: 'You already have an active mission. Finish or abort it.', type: 'warning' });
+    }
+    
+    p.missionProgress = {
+        active: true,
+        id: mission.id,
+        type: mission.type,
+        stage: 0,
+        data: { x: 0, y: 0 } // For maze
+    };
+    
+    await p.save();
+    socket.emit('message', { 
+        text: `CONTRACT ACCEPTED: ${mission.title}\nObjective: ${mission.desc}\nType 'mission start' to begin operation.`, 
+        type: 'success' 
+    });
 }
 
-/* --- THEMES (Colors) --- */
-.theme-green { --c-prim: #0f0; --c-sec: #0a0; --c-bg: #050a05; }
-.theme-amber { --c-prim: #fb0; --c-sec: #970; --c-bg: #110d00; }
-.theme-plasma { --c-prim: #0ef; --c-sec: #80f; --c-bg: #050010; }
-.theme-matrix { --c-prim: #0f0; --c-sec: #050; --c-bg: #000; }
-
-/* --- FULL SCREEN TERMINAL --- */
-.terminal-container {
-  width: 100%;
-  height: 100%;
-  background: var(--c-bg);
-  padding: 20px 30px; /* Slight padding for readibility */
-  overflow-y: auto;
-  position: relative;
-  z-index: 2;
-  font-size: 1rem;
+async function handleServerHackStart(user, socket, Player) {
+    let p = await Player.findOne({ username: user });
+    
+    if (!p.missionProgress || !p.missionProgress.active) {
+        return socket.emit('message', { text: 'No active mission. Check "jobs".', type: 'error' });
+    }
+    
+    if (p.missionProgress.type === 'heist') {
+        socket.emit('message', { 
+            text: "ESTABLISHING CONNECTION...\n[██████████] 100%\n\nConnected to Target System.\nUse 'netscan' then 'exploit' to breach security layers.", 
+            type: 'special' 
+        });
+    } else if (p.missionProgress.type === 'maze') {
+        handleMazeStart(user, socket, p);
+    }
 }
 
-/* --- HUD (Fixed Top Right) --- */
-.hud-container {
-  position: fixed;
-  top: 15px;
-  right: 25px;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  z-index: 1000;
-  pointer-events: none; /* Let clicks pass through */
-  font-family: 'Fira Code', monospace;
+async function handleMazeStart(user, socket, p) {
+    p.missionProgress.data = { x: 0, y: 0 };
+    await p.save();
+    
+    socket.emit('message', { 
+        text: `ENTERING NEURAL MAZE...\nLocation: [0,0] Entry Node.\nExits: SOUTH, EAST.\nUse 'nav [direction]' to move.`, 
+        type: 'special' 
+    });
 }
 
-.status-indicator {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 5px;
-  font-size: 0.75rem;
-  font-weight: bold;
-  letter-spacing: 1px;
-  color: #666;
-  text-transform: uppercase;
+async function handleNavigate(user, args, socket, Player) {
+    let p = await Player.findOne({ username: user });
+    if (!p.missionProgress || !p.missionProgress.active || p.missionProgress.type !== 'maze') {
+        return socket.emit('message', { text: 'Not in a navigation sequence.', type: 'error' });
+    }
+    
+    const dir = args[0] ? args[0].toLowerCase().charAt(0) : null; // n, s, e, w
+    const { x, y } = p.missionProgress.data;
+    const currentKey = `${x},${y}`;
+    const node = MAZE_GRID[currentKey] || { exits: [] };
+    
+    let newX = x;
+    let newY = y;
+    let moved = false;
+    
+    if (dir === 'n' && node.exits.includes('north')) { newX--; moved = true; }
+    if (dir === 's' && node.exits.includes('south')) { newX++; moved = true; }
+    if (dir === 'e' && node.exits.includes('east')) { newY++; moved = true; }
+    if (dir === 'w' && node.exits.includes('west')) { newY--; moved = true; }
+    
+    if (moved) {
+        // Check bounds
+        if (newX < 0 || newY < 0 || newX > 2 || newY > 2) {
+             return socket.emit('message', { text: 'Connection Lost. (Out of bounds)', type: 'error' });
+        }
+        
+        p.missionProgress.data = { x: newX, y: newY };
+        await p.save();
+        
+        const nextKey = `${newX},${newY}`;
+        const nextNode = MAZE_GRID[nextKey];
+        
+        socket.emit('message', { 
+            text: `Moved to [${newX},${newY}].\n${nextNode.desc}\nExits: ${nextNode.exits.join(', ').toUpperCase()}`, 
+            type: 'info' 
+        });
+        
+        // Win condition (Reach 2,1)
+        if (newX === 2 && newY === 1) {
+             socket.emit('message', { text: `TARGET REACHED. Uploading payload...`, type: 'success' });
+             // Complete mission
+             setTimeout(async () => {
+                 p.balance += 1200; // Reward
+                 p.missionProgress = {}; // Reset
+                 await p.save();
+                 socket.emit('player_data', p);
+                 socket.emit('message', { text: `MISSION COMPLETE. +1200 ODZ transferred.`, type: 'special' });
+                 socket.emit('play_sound', 'success');
+             }, 2000);
+        }
+        
+    } else {
+        socket.emit('message', { text: 'Cannot go that way. Firewall blocking path.', type: 'warning' });
+    }
 }
 
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #333;
-  transition: all 0.3s;
-}
-.status-dot.on { background: #0f0; box-shadow: 0 0 5px #0f0; }
-.status-dot.off { background: #f00; box-shadow: 0 0 5px #f00; animation: blink 1s infinite; }
-
-.balance-display {
-  font-size: 1.5rem;
-  color: var(--c-prim);
-  font-weight: bold;
-  text-shadow: 0 0 8px var(--c-prim);
-  letter-spacing: 1px;
-  background: rgba(0,0,0,0.5);
-  padding: 2px 8px;
-  border: 1px solid var(--c-sec);
+async function handleDownload(user, socket, Player) {
+    // Logic for heist completion
+    let p = await Player.findOne({ username: user });
+    if (!p.missionProgress || !p.missionProgress.active) return;
+    
+    socket.emit('message', { text: 'Downloading sensitive data...', type: 'loading' });
+    
+    setTimeout(async () => {
+        const reward = 500; // Simplified
+        p.balance += reward;
+        p.missionProgress = {};
+        await p.save();
+        socket.emit('player_data', p);
+        socket.emit('message', { text: `DOWNLOAD COMPLETE. Sold data for ${reward} ODZ. Mission Accomplished.`, type: 'success' });
+    }, 3000);
 }
 
-/* --- TERMINAL CONTENT --- */
-.line { margin-bottom: 4px; white-space: pre-wrap; line-height: 1.4; word-wrap: break-word; }
-.line.command { color: #fff; font-weight: bold; margin-top: 15px; opacity: 0.8; }
-.line.system { color: #888; font-style: italic; font-size: 0.9em; }
-.line.error { color: #f44 !important; font-weight: bold; }
-.line.success { color: var(--c-prim) !important; font-weight: bold; text-shadow: 0 0 5px var(--c-prim); }
-.line.warning { color: #ffeb3b !important; }
-.line.info { opacity: 0.9; color: #ccc; border-bottom: 1px dashed #333; padding-bottom: 5px; margin-bottom: 10px; }
-.line.special { 
-  color: #ffeb3b !important; 
-  border-left: 3px solid #ffeb3b; 
-  padding-left: 10px; 
-  font-weight: bold; 
+async function handleDefenseAction(user, command, socket, Player) {
+    socket.emit('message', { text: `Executing ${command.toUpperCase()} protocol... Defense boosted.`, type: 'success' });
 }
 
-/* --- ART (Monospace preservation) --- */
-.line.art {
-  font-family: 'Courier New', monospace;
-  white-space: pre;
-  line-height: 1.0;
-  overflow-x: auto;
-  color: var(--c-prim);
-  text-shadow: 0 0 3px var(--c-prim);
-  margin: 15px 0;
-  font-weight: bold;
-}
-
-/* --- INPUT --- */
-.input-line { 
-  display: flex; 
-  align-items: center; 
-  margin-top: 15px; 
-  border-top: 1px solid #222;
-  padding-top: 10px;
-}
-.prompt { margin-right: 10px; color: var(--c-prim); font-weight: bold; white-space: nowrap; text-shadow: 0 0 5px var(--c-prim); }
-
-input {
-  background: transparent;
-  border: none;
-  outline: none;
-  font-family: inherit;
-  font-size: 1rem;
-  color: #fff;
-  caret-color: var(--c-prim);
-  width: 100%;
-}
-
-/* --- VISUALS --- */
-#matrix-canvas { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; display: none; opacity: 0.2; }
-.scanline {
-  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-  background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.1) 50%), 
-              linear-gradient(90deg, rgba(255, 0, 0, 0.03), rgba(0, 255, 0, 0.01), rgba(0, 0, 255, 0.03));
-  background-size: 100% 3px, 3px 100%;
-  pointer-events: none; z-index: 10;
-}
-
-/* Boot Screen */
-.boot-screen {
-  display: flex; flex-direction: column; justify-content: center; align-items: center;
-  height: 100vh; width: 100vw; background: #000; cursor: pointer; z-index: 9999;
-  font-family: 'Fira Code', monospace; color: #0f0;
-}
-.boot-screen h1 { font-size: 3rem; text-shadow: 0 0 15px #0f0; margin-bottom: 20px; animation: pulse 3s infinite; }
-.boot-screen p { color: #0a0; font-size: 1rem; animation: blink 1.5s infinite; letter-spacing: 2px; }
-
-@keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.7; } 100% { opacity: 1; } }
-@keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
-
-/* Scrollbar */
-::-webkit-scrollbar { width: 8px; }
-::-webkit-scrollbar-track { background: var(--c-bg); }
-::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #555; }
+module.exports = { 
+    listJobs, 
+    acceptJob, 
+    handleMazeStart, 
+    handleNavigate, 
+    handleServerHackStart, 
+    handleDownload,
+    handleDefenseAction 
+};
