@@ -10,7 +10,9 @@ async function handleFiles(user, command, args, socket, Player) {
         const fileList = p.files.map(f => {
             // Fake file metadata for immersion
             const size = Math.floor(Math.random() * 500) + 10; 
-            const perm = '-rw-r--r--';
+            // Check if encrypted (simple name check for now)
+            const isEnc = f.endsWith('.enc');
+            const perm = isEnc ? '-r--------' : '-rw-r--r--';
             return `${perm}  user  ${size}B  ${f}`;
         }).join('\n');
         
@@ -26,15 +28,21 @@ async function handleFiles(user, command, args, socket, Player) {
         if (!filename) return socket.emit('message', { text: 'Usage: cat [filename]', type: 'error' });
         
         if (p.files.includes(filename)) {
+            if (filename.endsWith('.enc')) {
+                 return socket.emit('message', { text: `Error: File '${filename}' is encrypted. Use 'decrypt'.`, type: 'error' });
+            }
+
             // Check if it's a known file type with specific content
-            let content = "[BINARY DATA ENCRYPTED]";
+            let content = "[BINARY DATA]";
             
             if (filename.endsWith('.txt') || filename === 'readme.txt') {
                 content = "Welcome to OddzTek OS v16.0.\nUse 'help' to see available commands.\nStay safe, stay hidden.";
             } else if (filename.includes('wallet')) {
-                content = "0x7F... [ENCRYPTED KEY] ... (Use 'unlock' to decrypt)";
+                content = "0x7F... [ENCRYPTED KEY] ... (Use 'unlock' or 'decrypt' to claim)";
             } else if (filename.includes('log')) {
                 content = "SYSTEM LOG:\n[WARN] Unauthorized access attempt blocked.\n[INFO] Daemon started.";
+            } else if (filename.includes('blueprint')) {
+                 content = "BLUEPRINT: Prototype malware structure.\nCan be sold on black market.";
             } else {
                  content = `[OPENING ${filename}]...\n\n(File content would appear here)`;
             }
@@ -45,6 +53,60 @@ async function handleFiles(user, command, args, socket, Player) {
             });
         } else {
             socket.emit('message', { text: `Error: File '${filename}' not found.`, type: 'error' });
+        }
+    }
+
+    // DELETE FILES
+    else if (command === 'rm' || command === 'del') {
+        const filename = args[0];
+        if (!filename) return socket.emit('message', { text: 'Usage: rm [filename]', type: 'error' });
+
+        if (p.files.includes(filename)) {
+            p.files = p.files.filter(f => f !== filename);
+            await p.save();
+            socket.emit('message', { text: `File '${filename}' deleted.`, type: 'success' });
+        } else {
+            socket.emit('message', { text: `Error: File '${filename}' not found.`, type: 'error' });
+        }
+    }
+
+    // ENCRYPT/DECRYPT
+    else if (command === 'encrypt') {
+        const filename = args[0];
+        if (!filename) return socket.emit('message', { text: 'Usage: encrypt [filename]', type: 'error' });
+        
+        if (p.files.includes(filename)) {
+            if (filename.endsWith('.enc')) return socket.emit('message', { text: 'File already encrypted.', type: 'error' });
+            
+            // Remove old, add new
+            p.files = p.files.filter(f => f !== filename);
+            p.files.push(`${filename}.enc`);
+            await p.save();
+            socket.emit('message', { text: `File '${filename}' encrypted to '${filename}.enc'.`, type: 'success' });
+        } else {
+            socket.emit('message', { text: `File not found.`, type: 'error' });
+        }
+    }
+
+    else if (command === 'decrypt') {
+        const filename = args[0];
+        if (!filename) return socket.emit('message', { text: 'Usage: decrypt [filename]', type: 'error' });
+        
+        if (p.files.includes(filename)) {
+            if (!filename.endsWith('.enc')) return socket.emit('message', { text: 'File is not encrypted.', type: 'error' });
+            
+            // Decrypt logic (maybe chance to fail?)
+            if (Math.random() > 0.9) { // 10% fail chance
+                 return socket.emit('message', { text: 'Decryption failed. Key corrupted.', type: 'error' });
+            }
+
+            const newName = filename.replace('.enc', '');
+            p.files = p.files.filter(f => f !== filename);
+            p.files.push(newName);
+            await p.save();
+            socket.emit('message', { text: `File decrypted: ${newName}`, type: 'success' });
+        } else {
+             socket.emit('message', { text: `File not found.`, type: 'error' });
         }
     }
 }

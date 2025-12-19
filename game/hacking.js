@@ -1,5 +1,5 @@
 // game/hacking.js
-const { PORTS, HACK_COOLDOWN } = require('./constants');
+const { PORTS, HACK_COOLDOWN, LEVEL_XP_REQ } = require('./constants');
 const { getNPCs, findNPC } = require('./npcs');
 
 // --- STATE MANAGEMENT ---
@@ -189,7 +189,12 @@ async function handleInject(user, args, socket, Player) {
         // WIN CONDITION
         await successHack(user, socket, Player);
     } else {
-        socket.emit('message', { text: `Injection: +${gain}% Access. Trace +5%`, type: 'success' });
+        let p = await Player.findOne({ username: user });
+        if (p) {
+            p.xp += 5;
+            await p.save();
+        }
+        socket.emit('message', { text: `Injection: +${gain}% Access. Trace +5% [XP+5]`, type: 'success' });
     }
 }
 

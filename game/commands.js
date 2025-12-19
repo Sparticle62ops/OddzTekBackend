@@ -36,6 +36,10 @@ async function handleSystem(user, command, args, socket, Player, io, Auction) {
         case 'files':
         case 'cat':
         case 'read':
+        case 'rm':
+        case 'del':
+        case 'encrypt':
+        case 'decrypt':
              await handleFiles(user, command, args, socket, Player); 
              break;
         case 'inv':
