@@ -179,24 +179,72 @@ async function handleCollect(user, socket, Player) {
     socket.emit('play_sound', 'coin');
 }
 
-// --- DAILY REWARD ---
+// --- DAILY REWARD (Revamped) ---
 async function handleDaily(user, socket, Player) {
     let p = await Player.findOne({ username: user });
     const now = Date.now();
+    const day = 86400000;
     
-    if (now - p.lastDaily < 86400000) {
-        const hours = Math.ceil((86400000 - (now - p.lastDaily)) / 3600000);
+    if (now - p.lastDaily < day) {
+        const hours = Math.ceil((day - (now - p.lastDaily)) / 3600000);
         return socket.emit('message', { text: `Reward claimed. Available in ${hours}h.`, type: 'error' });
     }
 
-    let reward = 100 * p.level;
-    p.balance += reward;
+    // Streak Logic (Reset if > 48 hours since last claim)
+    if (now - p.lastDaily > day * 2) {
+        p.dailyStreak = 0;
+    }
+    p.dailyStreak = (p.dailyStreak || 0) + 1;
+
+    let base = 100 * p.level;
+    let streakBonus = Math.min(p.dailyStreak, 7) * 50; // Cap bonus at 7 days
+    let total = base + streakBonus;
+
+    p.balance += total;
     p.lastDaily = now;
+    
+    // XP Reward
+    p.xp += 50;
+    
     await p.save();
     
     socket.emit('player_data', p);
-    socket.emit('message', { text: `Daily Reward: +${reward} ODZ`, type: 'success' });
+    socket.emit('message', { 
+        text: `DAILY LOGIN: +${total} ODZ (Streak: ${p.dailyStreak} Days)\n[XP GAINED: +50]`, 
+        type: 'success' 
+    });
 }
+
+// --- WEEKLY REWARD ---
+async function handleWeekly(user, socket, Player) {
+    let p = await Player.findOne({ username: user });
+    const now = Date.now();
+    const week = 604800000;
+    
+    if (now - (p.lastWeekly || 0) < week) {
+        const days = Math.ceil((week - (now - (p.lastWeekly || 0))) / 86400000);
+        return socket.emit('message', { text: `Weekly reward available in ${days} days.`, type: 'error' });
+    }
+
+    let reward = 2000 * p.level;
+    p.balance += reward;
+    p.xp += 500;
+    p.lastWeekly = now;
+    
+    // Bonus Item
+    if (Math.random() > 0.5) {
+        p.inventory.push('crate_common');
+        socket.emit('message', { text: `WEEKLY BONUS: Received [crate_common]!`, type: 'special' });
+    }
+
+    await p.save();
+    socket.emit('player_data', p);
+    socket.emit('message', { 
+        text: `WEEKLY SUPPLY DROP: +${reward} ODZ\n[XP GAINED: +500]`, 
+        type: 'special' 
+    });
+}
+
 
 // --- TRANSFER ---
 async function handleTransfer(user, args, socket, Player) {
@@ -271,4 +319,4 @@ async function handleBank(user, args, socket, Player) {
     }
 }
 
-module.exports = { handleMine, handleShop, handleBuy, handleDaily, handleTransfer, handleCollect, handleBank };
+module.exports = { handleMine, handleShop, handleBuy, handleDaily, handleWeekly, handleTransfer, handleCollect, handleBank };

@@ -79,6 +79,8 @@ const playerSchema = new mongoose.Schema({
   lastMine: { type: Number, default: 0 },
   lastHack: { type: Number, default: 0 },
   lastDaily: { type: Number, default: 0 },
+  dailyStreak: { type: Number, default: 0 },
+  lastWeekly: { type: Number, default: 0 },
   lastCollection: { type: Number, default: 0 },
   
   // File System & Missions
@@ -87,6 +89,14 @@ const playerSchema = new mongoose.Schema({
 });
 
 const Player = mongoose.model('Player', playerSchema);
+
+const auctionSchema = new mongoose.Schema({
+    seller: String,
+    name: String,
+    price: Number,
+    created: Number
+});
+const Auction = mongoose.model('Auction', auctionSchema);
 
 // --- SOCKET LOGIC ---
 io.on('connection', (socket) => {
@@ -148,7 +158,7 @@ io.on('connection', (socket) => {
           return;
       }
       
-      await handleSystem(user, command, args, socket, Player, io);
+      await handleSystem(user, command, args, socket, Player, io, Auction);
 
     } catch (e) {
       console.error(e);
@@ -158,5 +168,16 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => { });
 });
+
+// --- KEEP-ALIVE ---
+// Pings itself every 20 seconds to prevent sleep
+const PING_URL = `http://localhost:${PORT}`; 
+setInterval(() => {
+    http.get(PING_URL, (res) => {
+        // console.log('Keep-Alive Ping:', res.statusCode);
+    }).on('error', (err) => {
+        // console.error('Ping Error:', err.message);
+    });
+}, 20000);
 
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
